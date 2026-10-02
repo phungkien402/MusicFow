@@ -1,0 +1,6 @@
+{
+  "name": "SoundFlow",
+  "description": "Ứng dụng nghe nhạc đa định dạng ngoại tuyến, hỗ trợ tải nhạc từ YouTube, TikTok với chọn chất lượng và playlist.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
