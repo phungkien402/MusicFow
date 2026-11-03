@@ -51,9 +51,39 @@ interface MusicDao {
     @Query("UPDATE songs SET playCount = playCount + 1 WHERE id = :songId")
     suspend fun incrementPlayCount(songId: Long)
 
+    @Query("UPDATE songs SET title = :title, artist = :artist WHERE id = :songId")
+    suspend fun updateSongTitleAndArtist(songId: Long, title: String, artist: String)
+
+    @Query("UPDATE songs SET lyrics = :lyrics WHERE id = :songId")
+    suspend fun updateSongLyrics(songId: Long, lyrics: String?)
+
+    // Backup & Restore
+    @Query("SELECT * FROM songs")
+    suspend fun getAllSongsList(): List<SongEntity>
+
+    @Query("SELECT * FROM playlists")
+    suspend fun getAllPlaylistsList(): List<PlaylistEntity>
+
+    @Query("SELECT * FROM playlist_songs")
+    suspend fun getAllPlaylistSongsCrossRefList(): List<PlaylistSongCrossRef>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPlaylists(playlists: List<PlaylistEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPlaylistSongsCrossRefs(refs: List<PlaylistSongCrossRef>)
+
     // Playlists
     @Query("SELECT * FROM playlists ORDER BY createdTimestamp ASC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
+
+    @Query("""
+        SELECT p.id, p.name, p.description, p.coverColorHex, p.createdTimestamp,
+               (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlistId = p.id) as songCount
+        FROM playlists p
+        ORDER BY p.createdTimestamp ASC
+    """)
+    fun getAllPlaylistsWithCount(): Flow<List<PlaylistWithCount>>
 
     @Query("SELECT * FROM playlists WHERE id = :playlistId")
     suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
@@ -66,6 +96,9 @@ interface MusicDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun addSongsToPlaylist(crossRefs: List<PlaylistSongCrossRef>)
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId")
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long)

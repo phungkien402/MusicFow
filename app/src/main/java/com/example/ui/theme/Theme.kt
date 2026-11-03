@@ -3,40 +3,47 @@ package com.example.ui.theme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-private val SoundFlowColorScheme = darkColorScheme(
-  primary = NeonCyan,
-  onPrimary = Color(0xFF031A24),
-  primaryContainer = Color(0xFF0C3547),
-  onPrimaryContainer = Color(0xFF88F2FF),
-  secondary = NeonPurple,
-  onSecondary = Color.White,
-  secondaryContainer = Color(0xFF3B1E63),
-  onSecondaryContainer = Color(0xFFE9D5FF),
-  tertiary = NeonPink,
-  onTertiary = Color.White,
-  tertiaryContainer = Color(0xFF5A102A),
-  onTertiaryContainer = Color(0xFFFFD9E2),
-  background = DarkBackground,
-  onBackground = TextPrimary,
-  surface = DarkSurface,
-  onSurface = TextPrimary,
-  surfaceVariant = DarkSurfaceVariant,
-  onSurfaceVariant = TextSecondary,
-  outline = DarkCardBorder
-)
+val LocalAppTheme = staticCompositionLocalOf { AppTheme.CYBERPUNK }
 
 @Composable
 fun MyApplicationTheme(
+  theme: AppTheme = AppTheme.CYBERPUNK,
   darkTheme: Boolean = true,
   dynamicColor: Boolean = false,
   content: @Composable () -> Unit,
 ) {
-  MaterialTheme(
-    colorScheme = SoundFlowColorScheme,
-    typography = Typography,
-    content = content
+  val colorScheme = darkColorScheme(
+    primary = theme.primary,
+    onPrimary = Color(0xFF031A24),
+    primaryContainer = theme.primary.copy(alpha = 0.2f),
+    onPrimaryContainer = theme.primary,
+    secondary = theme.secondary,
+    onSecondary = Color.White,
+    secondaryContainer = theme.secondary.copy(alpha = 0.2f),
+    onSecondaryContainer = theme.secondary,
+    tertiary = theme.accent,
+    onTertiary = Color.White,
+    tertiaryContainer = theme.accent.copy(alpha = 0.2f),
+    onTertiaryContainer = theme.accent,
+    background = theme.background,
+    onBackground = TextPrimary,
+    surface = theme.surface,
+    onSurface = TextPrimary,
+    surfaceVariant = theme.surfaceVariant,
+    onSurfaceVariant = TextSecondary,
+    outline = theme.cardBorder
   )
+
+  CompositionLocalProvider(LocalAppTheme provides theme) {
+    MaterialTheme(
+      colorScheme = colorScheme,
+      typography = Typography,
+      content = content
+    )
+  }
 }
 

@@ -35,11 +35,11 @@ class MusicPlaybackService : Service() {
         mediaSession = MediaSession(this, "SoundFlowMediaSession").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    activePlayerManager?.togglePlayPause()
+                    activePlayerManager?.resume()
                 }
 
                 override fun onPause() {
-                    activePlayerManager?.togglePlayPause()
+                    activePlayerManager?.pause()
                 }
 
                 override fun onSkipToNext() {
@@ -66,13 +66,20 @@ class MusicPlaybackService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PLAY -> activePlayerManager?.togglePlayPause()
-            ACTION_PAUSE -> activePlayerManager?.togglePlayPause()
+            ACTION_PLAY -> activePlayerManager?.resume()
+            ACTION_PAUSE -> activePlayerManager?.pause()
             ACTION_NEXT -> activePlayerManager?.playNext()
             ACTION_PREV -> activePlayerManager?.playPrevious()
             ACTION_STOP -> {
                 activePlayerManager?.pause()
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                val notifManager = getSystemService(NotificationManager::class.java)
+                notifManager?.cancel(NOTIFICATION_ID)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -98,7 +105,7 @@ class MusicPlaybackService : Service() {
             updateMediaSessionAndNotification()
         }
 
-        return START_STICKY
+        return if (isPlaying) START_STICKY else START_NOT_STICKY
     }
 
     private fun updateMediaSessionAndNotification() {
@@ -133,7 +140,7 @@ class MusicPlaybackService : Service() {
             .setState(
                 if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
                 activePlayerManager?.currentPositionMs?.value ?: 0L,
-                1.0f
+                if (isPlaying) 1.0f else 0.0f
             )
             .build()
         session.setPlaybackState(state)
@@ -149,7 +156,18 @@ class MusicPlaybackService : Service() {
 
         // 3. Build Status Bar Pull-Down Notification
         val notification = buildMediaNotification(song, albumArtBitmap, isPlaying)
-        startForeground(NOTIFICATION_ID, notification)
+        if (isPlaying) {
+            startForeground(NOTIFICATION_ID, notification)
+        } else {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.notify(NOTIFICATION_ID, notification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_DETACH)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(false)
+            }
+        }
     }
 
     private fun buildMediaNotification(song: Song, albumArt: Bitmap?, isPlaying: Boolean): Notification {
@@ -258,6 +276,8 @@ class MusicPlaybackService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.cancel(NOTIFICATION_ID)
         mediaSession?.isActive = false
         mediaSession?.release()
         mediaSession = null
@@ -304,7 +324,12 @@ class MusicPlaybackService : Service() {
 
         fun stop(context: Context) {
             try {
-                val intent = Intent(context, MusicPlaybackService::class.java)
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                manager?.cancel(NOTIFICATION_ID)
+                val intent = Intent(context, MusicPlaybackService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
                 context.stopService(intent)
             } catch (e: Exception) {}
         }

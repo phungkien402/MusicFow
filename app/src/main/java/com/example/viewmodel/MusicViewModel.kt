@@ -1,9 +1,11 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ui.theme.AppTheme
 import com.example.data.downloader.AudioLinkExtractor
 import com.example.data.downloader.ParsedLinkMetadata
 import com.example.data.local.MusicDatabase
@@ -16,14 +18,17 @@ import com.example.data.model.SourceType
 import com.example.data.player.AudioPlayerManager
 import com.example.data.player.EqualizerPreset
 import com.example.data.player.RepeatMode
+import com.example.data.player.ReverbMode
 import com.example.data.repository.MusicRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import java.util.UUID
 
 enum class AppTab(val title: String) {
@@ -70,6 +75,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val playlists: StateFlow<List<Playlist>> = repository.playlists
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val libraryFilterCounts: StateFlow<Map<LibraryFilter, Int>> = allSongs.combine(_libraryFilter) { songs, _ ->
+        mapOf(
+            LibraryFilter.ALL to songs.size,
+            LibraryFilter.DOWNLOADED to songs.count { it.sourceType in listOf(SourceType.YOUTUBE, SourceType.TIKTOK, SourceType.DIRECT_URL) },
+            LibraryFilter.FAVORITES to songs.count { it.isFavorite },
+            LibraryFilter.DEVICE to songs.count { it.sourceType == SourceType.LOCAL_DEVICE || it.sourceType == SourceType.OFFLINE }
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     // Filtered song list for Library Screen
     val filteredSongs: StateFlow<List<Song>> = combine(
         allSongs,
@@ -78,9 +92,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     ) { songs, filter, query ->
         val list = when (filter) {
             LibraryFilter.ALL -> songs
-            LibraryFilter.DOWNLOADED -> songs.filter { it.isDownloaded }
+            LibraryFilter.DOWNLOADED -> songs.filter { it.sourceType in listOf(SourceType.YOUTUBE, SourceType.TIKTOK, SourceType.DIRECT_URL) }
             LibraryFilter.FAVORITES -> songs.filter { it.isFavorite }
-            LibraryFilter.DEVICE -> songs.filter { it.sourceType == SourceType.LOCAL_DEVICE }
+            LibraryFilter.DEVICE -> songs.filter { it.sourceType == SourceType.LOCAL_DEVICE || it.sourceType == SourceType.OFFLINE }
         }
 
         if (query.isBlank()) {
@@ -141,6 +155,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _playlistDetailSongs = MutableStateFlow<List<Song>>(emptyList())
     val playlistDetailSongs: StateFlow<List<Song>> = _playlistDetailSongs.asStateFlow()
+
+    private val _songToEdit = MutableStateFlow<Song?>(null)
+    val songToEdit: StateFlow<Song?> = _songToEdit.asStateFlow()
+
+    private val _showAddMultipleSongsDialog = MutableStateFlow(false)
+    val showAddMultipleSongsDialog: StateFlow<Boolean> = _showAddMultipleSongsDialog.asStateFlow()
 
     init {
         // Initialize preset songs on first run
@@ -328,18 +348,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playPlaylist(playlist: Playlist, shuffle: Boolean = false) {
         viewModelScope.launch {
-            repository.getSongsForPlaylist(playlist.id).collect { songs ->
+            try {
+                // Must use first() so changes to songs table (e.g. playCount) do not re-trigger playQueue
+                val songs = repository.getSongsForPlaylist(playlist.id).first()
                 if (songs.isNotEmpty()) {
                     if (shuffle) {
-                        playerManager.toggleShuffle()
+                        playerManager.setShuffleEnabled(true)
                         val randomIdx = songs.indices.random()
                         playerManager.setQueue(songs, randomIdx)
                     } else {
+                        playerManager.setShuffleEnabled(false)
                         playerManager.setQueue(songs, 0)
                     }
                 } else {
                     _errorMessage.value = "Playlist '${playlist.name}' hiện chưa có bài hát"
                 }
+            } catch (e: Exception) {
+                _errorMessage.value = "Không thể phát playlist: ${e.message}"
             }
         }
     }
@@ -354,7 +379,139 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun cycleRepeatMode() = playerManager.cycleRepeatMode()
     fun setPlaybackSpeed(speed: Float) = playerManager.setPlaybackSpeed(speed)
     fun setEqualizerPreset(preset: EqualizerPreset) = playerManager.setEqualizerPreset(preset)
-    fun setSleepTimer(minutes: Int?) = playerManager.setSleepTimer(minutes)
+    val antiClippingEnabled: StateFlow<Boolean> = playerManager.antiClippingEnabled
+    fun setAntiClippingEnabled(enabled: Boolean) = playerManager.setAntiClippingEnabled(enabled)
+
+    val customVirtualizer: StateFlow<Float> = playerManager.customVirtualizer
+    val customTrebleClarity: StateFlow<Float> = playerManager.customTrebleClarity
+    val loudnessBoosterEnabled: StateFlow<Boolean> = playerManager.loudnessBoosterEnabled
+    val reverbMode: StateFlow<ReverbMode> = playerManager.reverbMode
+
+    fun setCustomVirtualizer(strength: Float) = playerManager.setCustomVirtualizer(strength)
+    fun setCustomTrebleClarity(strength: Float) = playerManager.setCustomTrebleClarity(strength)
+    fun setLoudnessBoosterEnabled(enabled: Boolean) = playerManager.setLoudnessBoosterEnabled(enabled)
+    fun setReverbMode(mode: ReverbMode) = playerManager.setReverbMode(mode)
+    fun resetCustomEqualizer() = playerManager.resetCustomEqualizer()
+    fun setSleepTimer(minutes: Int?) {
+        if (minutes == -1) {
+            playerManager.setStopAfterCurrentSong(true)
+            _successMessage.value = "Nhạc sẽ tự tắt khi bài hát hiện tại kết thúc"
+        } else if (minutes == null || minutes <= 0) {
+            playerManager.setSleepTimer(null)
+            _successMessage.value = "Đã tắt hẹn giờ"
+        } else {
+            playerManager.setSleepTimer(minutes)
+            _successMessage.value = "Đã hẹn giờ tắt nhạc sau $minutes phút"
+        }
+    }
+
+    // Theme Management
+    private val prefs = getApplication<Application>().getSharedPreferences("soundflow_prefs", Context.MODE_PRIVATE)
+    private val _currentTheme = MutableStateFlow(
+        try {
+            AppTheme.valueOf(prefs.getString("app_theme", AppTheme.CYBERPUNK.name) ?: AppTheme.CYBERPUNK.name)
+        } catch (e: Exception) {
+            AppTheme.CYBERPUNK
+        }
+    )
+    val currentTheme: StateFlow<AppTheme> = _currentTheme.asStateFlow()
+
+    fun setAppTheme(theme: AppTheme) {
+        _currentTheme.value = theme
+        prefs.edit().putString("app_theme", theme.name).apply()
+        _successMessage.value = "Đã áp dụng chủ đề ${theme.displayName}"
+    }
+
+    // Lyrics
+    private val _isGeneratingLyrics = MutableStateFlow(false)
+    val isGeneratingLyrics: StateFlow<Boolean> = _isGeneratingLyrics.asStateFlow()
+
+    fun autoSyncLyrics(song: Song) {
+        viewModelScope.launch {
+            _isGeneratingLyrics.value = true
+            try {
+                val durMs = if (song.durationMs > 0) song.durationMs else (playerManager.durationMs.value.takeIf { it > 0 } ?: 210000L)
+                val syncedLrc = com.example.data.lyrics.LyricsSynchronizerService.getOrGenerateSyncedLyrics(
+                    title = song.title,
+                    artist = song.artist,
+                    durationMs = durMs,
+                    existingLyrics = song.lyrics
+                )
+                if (syncedLrc.isNotBlank()) {
+                    repository.updateSongLyrics(song.id, syncedLrc)
+                    if (playerManager.currentSong.value?.id == song.id) {
+                        playerManager.updateCurrentSongLyrics(syncedLrc)
+                    }
+                    _successMessage.value = "✨ Đã tạo lời khớp timeline nhạc thành công!"
+                } else {
+                    _errorMessage.value = "Chưa tìm thấy lời tự động cho bản phối này. Bạn hãy bấm 'Sửa' để dán lời vào, SoundFlow sẽ tự động khớp timeline cho bạn!"
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Lỗi khi tạo lời đồng bộ: ${e.message}"
+            } finally {
+                _isGeneratingLyrics.value = false
+            }
+        }
+    }
+
+    fun updateSongLyrics(songId: Long, lyrics: String) {
+        viewModelScope.launch {
+            repository.updateSongLyrics(songId, lyrics.trim().ifBlank { null })
+            playerManager.currentSong.value?.let { curr ->
+                if (curr.id == songId) {
+                    playerManager.updateCurrentSongLyrics(lyrics.trim().ifBlank { null })
+                }
+            }
+            _successMessage.value = "Đã cập nhật lời bài hát"
+        }
+    }
+
+    // Queue Management & Crossfade
+    val playQueue = playerManager.playQueue
+    val queueIndex = playerManager.currentIndex
+    val crossfadeSeconds = playerManager.crossfadeSeconds
+
+    fun playQueueSong(index: Int) = playerManager.playQueueSong(index)
+    fun removeFromQueue(index: Int) = playerManager.removeFromQueue(index)
+    fun addToQueueNext(song: Song) {
+        playerManager.addToQueueNext(song)
+        _successMessage.value = "Đã thêm '${song.title}' vào phát tiếp theo"
+    }
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) = playerManager.moveQueueItem(fromIndex, toIndex)
+    fun clearQueueExceptCurrent() = playerManager.clearQueueExceptCurrent()
+    fun setCrossfadeSeconds(seconds: Int) {
+        playerManager.setCrossfadeSeconds(seconds)
+        _successMessage.value = if (seconds > 0) "Crossfade: $seconds giây" else "Đã tắt Crossfade"
+    }
+
+    // Backup & Restore
+    fun exportBackup(onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val json = repository.exportBackupJson()
+                onResult(json)
+                _successMessage.value = "Đã xuất dữ liệu sao lưu thành công!"
+            } catch (e: Exception) {
+                _errorMessage.value = "Lỗi xuất sao lưu: ${e.message}"
+                onResult(null)
+            }
+        }
+    }
+
+    fun importBackup(jsonString: String) {
+        viewModelScope.launch {
+            try {
+                val res = repository.importBackupJson(jsonString)
+                if (res.success) {
+                    _successMessage.value = res.message
+                } else {
+                    _errorMessage.value = res.message
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Lỗi khôi phục sao lưu: ${e.message}"
+            }
+        }
+    }
 
     fun toggleFavorite(song: Song) {
         viewModelScope.launch {
@@ -364,8 +521,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteSong(song: Song) {
         viewModelScope.launch {
+            playerManager.onSongDeleted(song)
             repository.deleteSong(song)
             _successMessage.value = "Đã xoá '${song.title}'"
+            if (playerManager.currentSong.value == null) {
+                _showNowPlayingSheet.value = false
+            }
         }
     }
 
@@ -415,11 +576,59 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var playlistDetailsJob: Job? = null
     private fun loadPlaylistDetails(playlistId: Long) {
-        viewModelScope.launch {
+        playlistDetailsJob?.cancel()
+        playlistDetailsJob = viewModelScope.launch {
             repository.getSongsForPlaylist(playlistId).collect { songs ->
                 _playlistDetailSongs.value = songs
             }
+        }
+    }
+
+    fun openEditSongDialog(song: Song) {
+        _songToEdit.value = song
+    }
+
+    fun closeEditSongDialog() {
+        _songToEdit.value = null
+    }
+
+    fun updateSongInfo(songId: Long, newTitle: String, newArtist: String) {
+        if (newTitle.isBlank()) {
+            _errorMessage.value = "Tên bài hát không được để trống"
+            return
+        }
+        viewModelScope.launch {
+            repository.updateSongTitleAndArtist(songId, newTitle.trim(), newArtist.trim())
+            playerManager.currentSong.value?.let { current ->
+                if (current.id == songId) {
+                    playerManager.updateCurrentSongMetadata(newTitle.trim(), newArtist.trim())
+                }
+            }
+            _selectedPlaylistForDetail.value?.let { playlist ->
+                loadPlaylistDetails(playlist.id)
+            }
+            _songToEdit.value = null
+            _successMessage.value = "Đã đổi tên bài hát thành '$newTitle'"
+        }
+    }
+
+    fun openAddMultipleSongsDialog() {
+        _showAddMultipleSongsDialog.value = true
+    }
+
+    fun closeAddMultipleSongsDialog() {
+        _showAddMultipleSongsDialog.value = false
+    }
+
+    fun addMultipleSongsToPlaylist(playlistId: Long, songIds: List<Long>) {
+        if (songIds.isEmpty()) return
+        viewModelScope.launch {
+            repository.addSongsToPlaylist(playlistId, songIds)
+            loadPlaylistDetails(playlistId)
+            _showAddMultipleSongsDialog.value = false
+            _successMessage.value = "Đã thêm ${songIds.size} bài hát vào playlist!"
         }
     }
 

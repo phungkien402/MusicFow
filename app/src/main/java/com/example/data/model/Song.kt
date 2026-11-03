@@ -39,7 +39,8 @@ data class Song(
     val sourceType: SourceType = SourceType.OFFLINE,
     val thumbnailUrl: String? = null,
     val addedTimestamp: Long = System.currentTimeMillis(),
-    val playCount: Int = 0
+    val playCount: Int = 0,
+    val lyrics: String? = null
 ) {
     val durationFormatted: String
         get() {

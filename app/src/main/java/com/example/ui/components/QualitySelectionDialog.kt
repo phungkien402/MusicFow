@@ -48,6 +48,16 @@ fun QualitySelectionDialog(
     var title by remember(metadata) { mutableStateOf(metadata.title) }
     var artist by remember(metadata) { mutableStateOf(metadata.artist) }
 
+    val availableQualities = remember(metadata) {
+        AudioQuality.getAvailableQualities(metadata.source, metadata.originalUrl)
+    }
+
+    LaunchedEffect(availableQualities) {
+        if (availableQualities.none { it.id == selectedQuality.id }) {
+            availableQualities.firstOrNull()?.let { onQualitySelected(it) }
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
@@ -146,15 +156,45 @@ fun QualitySelectionDialog(
                 HorizontalDivider(color = DarkCardBorder)
 
                 // Quality Options Menu
-                Text(
-                    text = "1. CHỌN CHẤT LƯỢNG ÂM THANH",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = NeonCyan
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "1. CHỌN CHẤT LƯỢNG ÂM THANH",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = NeonCyan
+                    )
+                    Text(
+                        text = "${availableQualities.size} định dạng khả dụng",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                }
+
+                // Helpful source capability notice
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = DarkSurfaceVariant.copy(alpha = 0.6f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.25f))
+                ) {
+                    Text(
+                        text = if (metadata.source == SourceType.YOUTUBE || metadata.source == SourceType.TIKTOK) {
+                            "⚡ Đã lọc định dạng: Nguồn ${if (metadata.source == SourceType.YOUTUBE) "YouTube" else "TikTok"} hỗ trợ tải xuất sắc MP3, M4A/AAC và Studio WAV PCM."
+                        } else {
+                            "⚡ Chỉ hiển thị định dạng tương thích và có thể tải trực tiếp từ liên kết này."
+                        },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AudioQuality.QUALITIES.forEach { quality ->
+                    availableQualities.forEach { quality ->
                         val isSelected = quality.id == selectedQuality.id
                         val borderColor = if (isSelected) NeonCyan else DarkCardBorder
                         val bgColor = if (isSelected) NeonCyan.copy(alpha = 0.12f) else DarkSurfaceVariant

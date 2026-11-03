@@ -33,8 +33,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
-                SoundFlowApp()
+            val viewModel: MusicViewModel = viewModel()
+            val currentTheme by viewModel.currentTheme.collectAsStateWithLifecycle()
+            MyApplicationTheme(theme = currentTheme) {
+                SoundFlowApp(viewModel = viewModel)
             }
         }
     }
@@ -44,6 +46,8 @@ class MainActivity : ComponentActivity() {
 fun SoundFlowApp(
     viewModel: MusicViewModel = viewModel()
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
         val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
             contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
@@ -53,6 +57,7 @@ fun SoundFlowApp(
         }
     }
 
+    val currentTheme by viewModel.currentTheme.collectAsStateWithLifecycle()
     val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
     val filteredSongs by viewModel.filteredSongs.collectAsStateWithLifecycle()
     val allSongs by viewModel.allSongs.collectAsStateWithLifecycle()
@@ -67,8 +72,18 @@ fun SoundFlowApp(
     val playbackSpeed by viewModel.playerManager.playbackSpeed.collectAsStateWithLifecycle()
     val equalizerPreset by viewModel.playerManager.equalizerPreset.collectAsStateWithLifecycle()
     val sleepTimerMinutes by viewModel.playerManager.sleepTimerMinutesLeft.collectAsStateWithLifecycle()
+    val isStopAfterSong by viewModel.playerManager.isStopAfterSong.collectAsStateWithLifecycle()
     val customBandLevels by viewModel.playerManager.customBandLevels.collectAsStateWithLifecycle()
     val customBassBoost by viewModel.playerManager.customBassBoost.collectAsStateWithLifecycle()
+    val customVirtualizer by viewModel.customVirtualizer.collectAsStateWithLifecycle()
+    val customTrebleClarity by viewModel.customTrebleClarity.collectAsStateWithLifecycle()
+    val loudnessBoosterEnabled by viewModel.loudnessBoosterEnabled.collectAsStateWithLifecycle()
+    val reverbMode by viewModel.reverbMode.collectAsStateWithLifecycle()
+    val antiClippingEnabled by viewModel.antiClippingEnabled.collectAsStateWithLifecycle()
+
+    val playQueue by viewModel.playQueue.collectAsStateWithLifecycle()
+    val queueIndex by viewModel.queueIndex.collectAsStateWithLifecycle()
+    val crossfadeSeconds by viewModel.crossfadeSeconds.collectAsStateWithLifecycle()
 
     val libraryFilter by viewModel.libraryFilter.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -86,6 +101,45 @@ fun SoundFlowApp(
     val songToAddToPlaylist by viewModel.songToAddToPlaylist.collectAsStateWithLifecycle()
     val selectedPlaylistForDetail by viewModel.selectedPlaylistForDetail.collectAsStateWithLifecycle()
     val playlistDetailSongs by viewModel.playlistDetailSongs.collectAsStateWithLifecycle()
+    val libraryFilterCounts by viewModel.libraryFilterCounts.collectAsStateWithLifecycle()
+    val songToEdit by viewModel.songToEdit.collectAsStateWithLifecycle()
+    val showAddMultipleSongsDialog by viewModel.showAddMultipleSongsDialog.collectAsStateWithLifecycle()
+
+    var showThemeDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
+
+    val exportBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri?.let {
+            viewModel.exportBackup { json ->
+                if (json != null) {
+                    try {
+                        context.contentResolver.openOutputStream(it)?.use { os ->
+                            os.write(json.toByteArray(Charsets.UTF_8))
+                        }
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
+            }
+        }
+    }
+
+    val importBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            try {
+                context.contentResolver.openInputStream(it)?.use { ins ->
+                    val json = ins.bufferedReader(Charsets.UTF_8).use { r -> r.readText() }
+                    viewModel.importBackup(json)
+                }
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+    }
 
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
     val successMessage by viewModel.successMessage.collectAsStateWithLifecycle()
@@ -110,23 +164,27 @@ fun SoundFlowApp(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
-            containerColor = DarkBackground,
+            containerColor = currentTheme.background,
             snackbarHost = {
                 SnackbarHost(
                     hostState = snackbarHostState,
-                    modifier = Modifier.padding(bottom = if (currentPlayingSong != null) 140.dp else 80.dp)
+                    modifier = Modifier.padding(bottom = 12.dp)
                 ) { data ->
                     Snackbar(
                         snackbarData = data,
-                        containerColor = DarkSurfaceVariant,
+                        containerColor = currentTheme.surfaceVariant,
                         contentColor = TextPrimary,
-                        actionColor = NeonCyan,
+                        actionColor = currentTheme.primary,
                         shape = RoundedCornerShape(12.dp)
                     )
                 }
             },
             bottomBar = {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(currentTheme.surface)
+                ) {
                     // Mini Player (Visible when a song is playing or loaded)
                     AnimatedVisibility(
                         visible = currentPlayingSong != null && !showNowPlayingSheet,
@@ -148,12 +206,12 @@ fun SoundFlowApp(
 
                     // Navigation Bar
                     NavigationBar(
-                        containerColor = DarkSurface,
+                        containerColor = currentTheme.surface,
                         tonalElevation = 8.dp,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                            .border(1.dp, DarkCardBorder, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                            .border(1.dp, currentTheme.cardBorder, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                            .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                             .testTag("bottom_nav_bar")
                     ) {
                         // Library Tab
@@ -167,8 +225,8 @@ fun SoundFlowApp(
                             label = { Text("Thư viện", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF031A24),
-                                selectedTextColor = NeonCyan,
-                                indicatorColor = NeonCyan,
+                                selectedTextColor = currentTheme.primary,
+                                indicatorColor = currentTheme.primary,
                                 unselectedIconColor = TextSecondary,
                                 unselectedTextColor = TextSecondary
                             ),
@@ -186,8 +244,8 @@ fun SoundFlowApp(
                             label = { Text("Tải từ Link", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF031A24),
-                                selectedTextColor = NeonCyan,
-                                indicatorColor = NeonCyan,
+                                selectedTextColor = currentTheme.primary,
+                                indicatorColor = currentTheme.primary,
                                 unselectedIconColor = TextSecondary,
                                 unselectedTextColor = TextSecondary
                             ),
@@ -202,8 +260,8 @@ fun SoundFlowApp(
                             label = { Text("Playlists", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF031A24),
-                                selectedTextColor = NeonCyan,
-                                indicatorColor = NeonCyan,
+                                selectedTextColor = currentTheme.primary,
+                                indicatorColor = currentTheme.primary,
                                 unselectedIconColor = TextSecondary,
                                 unselectedTextColor = TextSecondary
                             ),
@@ -226,16 +284,21 @@ fun SoundFlowApp(
                             isPlaying = isPlaying,
                             currentFilter = libraryFilter,
                             searchQuery = searchQuery,
+                            filterCounts = libraryFilterCounts,
                             isImporting = isImporting,
                             onFilterChange = { viewModel.setLibraryFilter(it) },
                             onSearchChange = { viewModel.setSearchQuery(it) },
                             onSongClick = { song -> viewModel.playSong(song, filteredSongs) },
                             onToggleFavorite = { song -> viewModel.toggleFavorite(song) },
                             onAddToPlaylistClick = { song -> viewModel.openAddToPlaylist(song) },
+                            onEditSongClick = { song -> viewModel.openEditSongDialog(song) },
                             onDeleteSongClick = { song -> viewModel.deleteSong(song) },
                             onScanDeviceAudio = { viewModel.scanDeviceAudio() },
                             onImportUris = { uris -> viewModel.importAudioFiles(uris) },
-                            onNavigateToDownloader = { viewModel.setTab(AppTab.DOWNLOADER) }
+                            onNavigateToDownloader = { viewModel.setTab(AppTab.DOWNLOADER) },
+                            onOpenThemeDialog = { showThemeDialog = true },
+                            onOpenBackupDialog = { showBackupDialog = true },
+                            onAddToQueueNext = { song -> viewModel.addToQueueNext(song) }
                         )
                     }
 
@@ -265,7 +328,8 @@ fun SoundFlowApp(
                             onPlayPlaylist = { playlist, shuffle -> viewModel.playPlaylist(playlist, shuffle) },
                             onDeletePlaylist = { playlist -> viewModel.deletePlaylist(playlist) },
                             onSongClick = { song -> viewModel.playSong(song, playlistDetailSongs) },
-                            onRemoveSongFromPlaylist = { playlist, song -> viewModel.removeSongFromPlaylist(playlist.id, song) }
+                            onRemoveSongFromPlaylist = { playlist, song -> viewModel.removeSongFromPlaylist(playlist.id, song) },
+                            onAddSongsToPlaylistClick = { viewModel.openAddMultipleSongsDialog() }
                         )
                     }
                 }
@@ -289,8 +353,17 @@ fun SoundFlowApp(
                     playbackSpeed = playbackSpeed,
                     equalizerPreset = equalizerPreset,
                     sleepTimerMinutes = sleepTimerMinutes,
+                    isStopAfterSong = isStopAfterSong,
+                    crossfadeSeconds = crossfadeSeconds,
+                    playQueue = playQueue,
+                    currentQueueIndex = queueIndex,
                     customBandLevels = customBandLevels,
                     customBassBoost = customBassBoost,
+                    customVirtualizer = customVirtualizer,
+                    customTrebleClarity = customTrebleClarity,
+                    loudnessBoosterEnabled = loudnessBoosterEnabled,
+                    reverbMode = reverbMode,
+                    antiClippingEnabled = antiClippingEnabled,
                     onPlayPauseClick = { viewModel.togglePlayPause() },
                     onNextClick = { viewModel.playNext() },
                     onPreviousClick = { viewModel.playPrevious() },
@@ -301,10 +374,20 @@ fun SoundFlowApp(
                     onCycleRepeat = { viewModel.cycleRepeatMode() },
                     onSpeedChange = { speed -> viewModel.setPlaybackSpeed(speed) },
                     onEqualizerChange = { preset -> viewModel.setEqualizerPreset(preset) },
+                    onAntiClippingChange = { enabled -> viewModel.setAntiClippingEnabled(enabled) },
                     onCustomBandChange = { band, level -> viewModel.playerManager.setCustomBand(band, level) },
                     onCustomBassBoostChange = { strength -> viewModel.playerManager.setCustomBassBoost(strength) },
-                    onResetCustomEqualizer = { viewModel.playerManager.resetCustomEqualizer() },
+                    onCustomVirtualizerChange = { strength -> viewModel.setCustomVirtualizer(strength) },
+                    onCustomTrebleClarityChange = { strength -> viewModel.setCustomTrebleClarity(strength) },
+                    onLoudnessBoosterChange = { enabled -> viewModel.setLoudnessBoosterEnabled(enabled) },
+                    onReverbModeChange = { mode -> viewModel.setReverbMode(mode) },
+                    onResetCustomEqualizer = { viewModel.resetCustomEqualizer() },
                     onSleepTimerChange = { mins -> viewModel.setSleepTimer(mins) },
+                    onCrossfadeChange = { secs -> viewModel.setCrossfadeSeconds(secs) },
+                    onPlayQueueSong = { idx -> viewModel.playQueueSong(idx) },
+                    onRemoveFromQueue = { idx -> viewModel.removeFromQueue(idx) },
+                    onMoveQueueItem = { from, to -> viewModel.moveQueueItem(from, to) },
+                    onClearQueueExceptCurrent = { viewModel.clearQueueExceptCurrent() },
                     onToggleFavorite = { s -> viewModel.toggleFavorite(s) },
                     onAddToPlaylistClick = { s -> viewModel.openAddToPlaylist(s) },
                     onDismiss = { viewModel.closeNowPlayingSheet() }
@@ -355,6 +438,57 @@ fun SoundFlowApp(
                     viewModel.openCreatePlaylistDialog()
                 },
                 onDismiss = { viewModel.closeAddToPlaylist() }
+            )
+        }
+
+        // Edit Song Title & Artist Dialog
+        songToEdit?.let { song ->
+            EditSongDialog(
+                song = song,
+                onDismiss = { viewModel.closeEditSongDialog() },
+                onConfirm = { newTitle, newArtist ->
+                    viewModel.updateSongInfo(song.id, newTitle, newArtist)
+                }
+            )
+        }
+
+        // Add Multiple Songs to Playlist Dialog
+        if (showAddMultipleSongsDialog && selectedPlaylistForDetail != null) {
+            AddMultipleSongsToPlaylistDialog(
+                playlist = selectedPlaylistForDetail!!,
+                allSongs = allSongs,
+                existingSongs = playlistDetailSongs,
+                onDismiss = { viewModel.closeAddMultipleSongsDialog() },
+                onConfirm = { ids ->
+                    viewModel.addMultipleSongsToPlaylist(selectedPlaylistForDetail!!.id, ids)
+                }
+            )
+        }
+
+        // Theme Selection Dialog
+        if (showThemeDialog) {
+            ThemeSelectionDialog(
+                currentTheme = currentTheme,
+                onSelectTheme = { theme ->
+                    viewModel.setAppTheme(theme)
+                },
+                onDismiss = { showThemeDialog = false }
+            )
+        }
+
+        // Backup & Restore Dialog
+        if (showBackupDialog) {
+            BackupRestoreDialog(
+                onExportBackup = {
+                    val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+                    exportBackupLauncher.launch("soundflow_backup_$timestamp.json")
+                    showBackupDialog = false
+                },
+                onImportBackupFile = {
+                    importBackupLauncher.launch(arrayOf("application/json", "text/*"))
+                    showBackupDialog = false
+                },
+                onDismiss = { showBackupDialog = false }
             )
         }
     }

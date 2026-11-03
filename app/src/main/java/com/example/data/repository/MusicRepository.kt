@@ -29,6 +29,11 @@ data class ImportResult(
     val skippedDuplicates: Int
 )
 
+data class BackupImportResult(
+    val success: Boolean,
+    val message: String
+)
+
 class MusicRepository(
     private val context: Context,
     private val dao: MusicDao
@@ -38,11 +43,8 @@ class MusicRepository(
     val downloadedSongs: Flow<List<Song>> = dao.getDownloadedSongs().map { list -> list.map { it.toSong() } }
     val favoriteSongs: Flow<List<Song>> = dao.getFavoriteSongs().map { list -> list.map { it.toSong() } }
 
-    val playlists: Flow<List<Playlist>> = dao.getAllPlaylists().map { list ->
-        list.map { entity ->
-            val count = dao.getSongCountForPlaylistSync(entity.id)
-            entity.toPlaylist(count)
-        }
+    val playlists: Flow<List<Playlist>> = dao.getAllPlaylistsWithCount().map { list ->
+        list.map { it.toPlaylist() }
     }
 
     suspend fun initializePresetTracksIfEmpty() = withContext(Dispatchers.IO) {
@@ -126,7 +128,14 @@ class MusicRepository(
                 sourceType = SourceType.OFFLINE.name,
                 thumbnailUrl = null,
                 addedTimestamp = System.currentTimeMillis() - 100000,
-                playCount = 12
+                playCount = 12,
+                lyrics = """
+                    [00:01.00] Dưới ánh đèn đêm thành phố lung linh
+                    [00:05.00] Tiếng mưa rơi đều bên khung cửa sổ
+                    [00:09.00] Giai điệu lofi êm ái ru lòng mình
+                    [00:13.00] Thư thái tâm hồn giữa những bộn bề
+                    [00:18.00] Chill cùng SoundFlow, từng phút giây bình yên
+                """.trimIndent()
             ),
             SongEntity(
                 title = "TikTok Viral Energy",
@@ -143,7 +152,14 @@ class MusicRepository(
                 sourceType = SourceType.TIKTOK.name,
                 thumbnailUrl = null,
                 addedTimestamp = System.currentTimeMillis() - 80000,
-                playCount = 28
+                playCount = 28,
+                lyrics = """
+                    [00:01.00] Bắt nhịp xu hướng, sôi động từng nốt nhạc
+                    [00:04.00] Âm bass vang dội bùng cháy năng lượng
+                    [00:08.00] Đưa tay lên cao cùng hòa nhịp điệu
+                    [00:12.00] TikTok Viral Beat khuấy động ngày vui
+                    [00:16.00] Let's go! Đam mê âm nhạc không ngừng nghỉ!
+                """.trimIndent()
             ),
             SongEntity(
                 title = "Cyber Bass Horizon",
@@ -160,7 +176,14 @@ class MusicRepository(
                 sourceType = SourceType.YOUTUBE.name,
                 thumbnailUrl = null,
                 addedTimestamp = System.currentTimeMillis() - 50000,
-                playCount = 7
+                playCount = 7,
+                lyrics = """
+                    [00:01.00] Chìm vào không gian neon rực rỡ
+                    [00:05.00] Nhịp bass sâu lắng dẫn lối tương lai
+                    [00:09.00] Âm thanh điện tử lan tỏa khắp nơi
+                    [00:14.00] Cảm nhận từng làn sóng âm kỳ diệu
+                    [00:18.00] Cyberpunk Future Wave 2026
+                """.trimIndent()
             ),
             SongEntity(
                 title = "Acoustic Golden Hour",
@@ -177,7 +200,14 @@ class MusicRepository(
                 sourceType = SourceType.OFFLINE.name,
                 thumbnailUrl = null,
                 addedTimestamp = System.currentTimeMillis() - 20000,
-                playCount = 15
+                playCount = 15,
+                lyrics = """
+                    [00:01.00] Nắng vàng buông nhẹ chiều hoàng hôn
+                    [00:05.00] Tiếng đàn guitar mộc mạc ngân vang
+                    [00:10.00] Bình yên một tách cà phê thơm ngát
+                    [00:15.00] Nhẹ nhàng gác lại muộn phiền âu lo
+                    [00:20.00] Tận hưởng khoảnh khắc tuyệt vời này
+                """.trimIndent()
             )
         )
 
@@ -209,11 +239,34 @@ class MusicRepository(
         dao.incrementPlayCount(songId)
     }
 
+    suspend fun updateSongTitleAndArtist(songId: Long, title: String, artist: String) = withContext(Dispatchers.IO) {
+        dao.updateSongTitleAndArtist(songId, title.trim(), artist.trim())
+    }
+
     suspend fun deleteSong(song: Song) = withContext(Dispatchers.IO) {
         dao.deleteSong(song.id)
-        val file = File(song.filePath)
-        if (file.exists() && file.isFile) {
-            file.delete()
+        if (song.filePath.isNotBlank()) {
+            val file = File(song.filePath)
+            if (file.exists() && file.isFile) {
+                file.delete()
+            }
+            val baseName = file.name
+            if (baseName.isNotBlank()) {
+                val offlineFile = File(context.getExternalFilesDir(null) ?: context.filesDir, "offline_tracks/$baseName")
+                if (offlineFile.exists() && offlineFile.isFile) {
+                    offlineFile.delete()
+                }
+                val downloadFile = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads/$baseName")
+                if (downloadFile.exists() && downloadFile.isFile) {
+                    downloadFile.delete()
+                }
+            }
+        }
+        if (!song.thumbnailUrl.isNullOrBlank() && song.thumbnailUrl.startsWith("/")) {
+            val thumbFile = File(song.thumbnailUrl)
+            if (thumbFile.exists() && thumbFile.isFile) {
+                thumbFile.delete()
+            }
         }
     }
 
@@ -234,6 +287,11 @@ class MusicRepository(
 
     suspend fun addSongToPlaylist(playlistId: Long, songId: Long) = withContext(Dispatchers.IO) {
         dao.addSongToPlaylist(PlaylistSongCrossRef(playlistId, songId))
+    }
+
+    suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>) = withContext(Dispatchers.IO) {
+        val refs = songIds.map { PlaylistSongCrossRef(playlistId, it) }
+        dao.addSongsToPlaylist(refs)
     }
 
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long) = withContext(Dispatchers.IO) {
@@ -485,5 +543,157 @@ class MusicRepository(
             }
         }
         ImportResult(results, skippedDuplicates)
+    }
+
+    suspend fun updateSongLyrics(songId: Long, lyrics: String?) = withContext(Dispatchers.IO) {
+        dao.updateSongLyrics(songId, lyrics)
+    }
+
+    suspend fun exportBackupJson(): String = withContext(Dispatchers.IO) {
+        val songs = dao.getAllSongsList()
+        val playlists = dao.getAllPlaylistsList()
+        val crossRefs = dao.getAllPlaylistSongsCrossRefList()
+
+        val json = org.json.JSONObject()
+        json.put("version", 1)
+        json.put("exportTime", System.currentTimeMillis())
+        json.put("app", "SoundFlow")
+
+        val playlistsArray = org.json.JSONArray()
+        playlists.forEach { p ->
+            val obj = org.json.JSONObject()
+            obj.put("id", p.id)
+            obj.put("name", p.name)
+            obj.put("description", p.description)
+            obj.put("coverColorHex", p.coverColorHex)
+            obj.put("createdTimestamp", p.createdTimestamp)
+            playlistsArray.put(obj)
+        }
+        json.put("playlists", playlistsArray)
+
+        val songsArray = org.json.JSONArray()
+        songs.forEach { s ->
+            val obj = org.json.JSONObject()
+            obj.put("id", s.id)
+            obj.put("title", s.title)
+            obj.put("artist", s.artist)
+            obj.put("album", s.album)
+            obj.put("durationMs", s.durationMs)
+            obj.put("filePath", s.filePath)
+            obj.put("sourceUrl", s.sourceUrl ?: "")
+            obj.put("format", s.format)
+            obj.put("bitrate", s.bitrate)
+            obj.put("fileSizeBytes", s.fileSizeBytes)
+            obj.put("isFavorite", s.isFavorite)
+            obj.put("sourceType", s.sourceType)
+            obj.put("thumbnailUrl", s.thumbnailUrl ?: "")
+            obj.put("playCount", s.playCount)
+            obj.put("lyrics", s.lyrics ?: "")
+            songsArray.put(obj)
+        }
+        json.put("songs", songsArray)
+
+        val refsArray = org.json.JSONArray()
+        crossRefs.forEach { r ->
+            val obj = org.json.JSONObject()
+            obj.put("playlistId", r.playlistId)
+            obj.put("songId", r.songId)
+            refsArray.put(obj)
+        }
+        json.put("playlist_songs", refsArray)
+
+        json.toString(2)
+    }
+
+    suspend fun importBackupJson(jsonString: String): BackupImportResult = withContext(Dispatchers.IO) {
+        try {
+            val json = org.json.JSONObject(jsonString)
+            val playlistsArray = json.optJSONArray("playlists") ?: org.json.JSONArray()
+            val songsArray = json.optJSONArray("songs") ?: org.json.JSONArray()
+            val refsArray = json.optJSONArray("playlist_songs") ?: org.json.JSONArray()
+
+            var restoredPlaylists = 0
+            var restoredSongs = 0
+
+            val playlistEntities = mutableListOf<PlaylistEntity>()
+            for (i in 0 until playlistsArray.length()) {
+                val obj = playlistsArray.getJSONObject(i)
+                playlistEntities.add(
+                    PlaylistEntity(
+                        id = obj.optLong("id", 0),
+                        name = obj.getString("name"),
+                        description = obj.optString("description", ""),
+                        coverColorHex = obj.optString("coverColorHex", "#00F5FF"),
+                        createdTimestamp = obj.optLong("createdTimestamp", System.currentTimeMillis())
+                    )
+                )
+            }
+            if (playlistEntities.isNotEmpty()) {
+                dao.insertPlaylists(playlistEntities)
+                restoredPlaylists = playlistEntities.size
+            }
+
+            val songEntities = mutableListOf<SongEntity>()
+            for (i in 0 until songsArray.length()) {
+                val obj = songsArray.getJSONObject(i)
+                val title = obj.getString("title")
+                val artist = obj.optString("artist", "Unknown")
+                val existing = dao.findDuplicateSong(title, artist)
+                if (existing != null) {
+                    val backupLyrics = obj.optString("lyrics", "")
+                    if (backupLyrics.isNotBlank() && existing.lyrics.isNullOrBlank()) {
+                        dao.updateSongLyrics(existing.id, backupLyrics)
+                    }
+                    if (obj.optBoolean("isFavorite", false) && !existing.isFavorite) {
+                        dao.toggleFavorite(existing.id)
+                    }
+                } else {
+                    songEntities.add(
+                        SongEntity(
+                            id = obj.optLong("id", 0),
+                            title = title,
+                            artist = artist,
+                            album = obj.optString("album", "SoundFlow Collection"),
+                            durationMs = obj.optLong("durationMs", 180000L),
+                            filePath = obj.optString("filePath", ""),
+                            sourceUrl = obj.optString("sourceUrl", null),
+                            format = obj.optString("format", "mp3"),
+                            bitrate = obj.optString("bitrate", "320 kbps"),
+                            fileSizeBytes = obj.optLong("fileSizeBytes", 0L),
+                            isDownloaded = true,
+                            isFavorite = obj.optBoolean("isFavorite", false),
+                            sourceType = obj.optString("sourceType", SourceType.OFFLINE.name),
+                            thumbnailUrl = obj.optString("thumbnailUrl", null),
+                            addedTimestamp = System.currentTimeMillis(),
+                            playCount = obj.optInt("playCount", 0),
+                            lyrics = obj.optString("lyrics", null).ifBlank { null }
+                        )
+                    )
+                }
+            }
+            if (songEntities.isNotEmpty()) {
+                dao.insertSongs(songEntities)
+                restoredSongs = songEntities.size
+            }
+
+            val crossRefs = mutableListOf<PlaylistSongCrossRef>()
+            for (i in 0 until refsArray.length()) {
+                val obj = refsArray.getJSONObject(i)
+                crossRefs.add(
+                    PlaylistSongCrossRef(
+                        playlistId = obj.getLong("playlistId"),
+                        songId = obj.getLong("songId")
+                    )
+                )
+            }
+            if (crossRefs.isNotEmpty()) {
+                dao.insertPlaylistSongsCrossRefs(crossRefs)
+            }
+
+            BackupImportResult(true, "Đã khôi phục thành công $restoredPlaylists playlist và $restoredSongs bài hát!")
+        } catch (e: Exception) {
+            Log.e("MusicRepository", "Failed to import backup JSON", e)
+            BackupImportResult(false, "Lỗi đọc file sao lưu: ${e.message}")
+        }
     }
 }

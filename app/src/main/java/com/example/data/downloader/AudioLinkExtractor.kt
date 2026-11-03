@@ -13,6 +13,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -255,7 +256,12 @@ class AudioLinkExtractor(private val context: Context) {
         try {
             val downloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads").apply { mkdirs() }
             val sanitizedTitle = metadata.title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(30)
-            val extension = if (metadata.source == SourceType.YOUTUBE) "mp3" else quality.format.extension
+            val extension = when (quality.format) {
+                AudioFormat.WAV -> "wav"
+                AudioFormat.M4A -> "m4a"
+                AudioFormat.FLAC -> "flac"
+                else -> "mp3"
+            }
             val targetFile = File(downloadDir, "${sanitizedTitle}_${System.currentTimeMillis()}.$extension")
 
             var downloadedBytes = 0L
@@ -263,87 +269,58 @@ class AudioLinkExtractor(private val context: Context) {
 
             var streamCandidate = metadata.directStreamUrl
 
-            // 1. Resolve LOADER_PROGRESS for YouTube
-            if (streamCandidate != null && streamCandidate.startsWith("LOADER_PROGRESS:")) {
-                val pollUrl = streamCandidate.removePrefix("LOADER_PROGRESS:")
-                var resolvedUrl: String? = null
-                for (pollAttempt in 1..8) {
-                    if (pollAttempt > 1) delay(1000)
-                    onProgress(10 + pollAttempt * 5, 0, totalBytes, "Đang xử lý âm thanh YouTube ($pollAttempt/8)...")
-                    try {
-                        val pollReq = Request.Builder()
-                            .url(pollUrl)
-                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                            .build()
-                        httpClient.newCall(pollReq).execute().use { pResp ->
-                            if (pResp.isSuccessful) {
-                                val pBody = pResp.body?.string()
-                                if (!pBody.isNullOrBlank()) {
-                                    val pJson = JSONObject(pBody)
-                                    val dUrl = pJson.optString("download_url", "")
-                                    if (dUrl.isNotBlank() && (dUrl.startsWith("http://") || dUrl.startsWith("https://"))) {
-                                        resolvedUrl = dUrl
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w("AudioLinkExtractor", "Poll loader.to attempt $pollAttempt error: ${e.message}")
-                    }
-                    if (!resolvedUrl.isNullOrBlank()) break
-                }
-                streamCandidate = resolvedUrl
-            }
-
-            // 2. Direct on-the-fly resolution for YouTube if candidate is still null
-            if (streamCandidate.isNullOrBlank() && metadata.source == SourceType.YOUTUBE) {
+            // 1. YouTube Multi-Source Resilient Extraction Engine
+            if (metadata.source == SourceType.YOUTUBE) {
                 val videoId = parseYouTubeId(metadata.originalUrl)
-                if (videoId != null) {
-                    onProgress(10, 0, totalBytes, "Đang kết nối trích xuất YouTube...")
-                    try {
-                        val initReq = Request.Builder()
-                            .url("https://loader.to/ajax/download.php?format=mp3&url=https://www.youtube.com/watch?v=$videoId")
-                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                            .build()
-                        httpClient.newCall(initReq).execute().use { resp ->
-                            if (resp.isSuccessful) {
-                                val body = resp.body?.string()
-                                if (!body.isNullOrBlank()) {
-                                    val json = JSONObject(body)
-                                    val immediate = json.optString("download_url", "")
-                                    if (immediate.isNotBlank() && (immediate.startsWith("http://") || immediate.startsWith("https://"))) {
-                                        streamCandidate = immediate
-                                    } else {
-                                        val pollUrl = json.optString("progress_url", "")
-                                        val streamId = json.optString("id", "")
-                                        val targetPoll = if (pollUrl.isNotBlank()) pollUrl else "https://loader.to/ajax/progress.php?id=$streamId"
-                                        for (i in 1..8) {
-                                            if (i > 1) delay(1000)
-                                            onProgress(15 + i * 5, 0, totalBytes, "Đang tải audio từ YouTube...")
-                                            val pReq = Request.Builder().url(targetPoll).header("User-Agent", "Mozilla/5.0").build()
-                                            httpClient.newCall(pReq).execute().use { pResp ->
-                                                val pBody = pResp.body?.string()
-                                                if (!pBody.isNullOrBlank()) {
-                                                    val pJson = JSONObject(pBody)
-                                                    val dUrl = pJson.optString("download_url", "")
-                                                    if (dUrl.isNotBlank() && (dUrl.startsWith("http://") || dUrl.startsWith("https://"))) {
-                                                        streamCandidate = dUrl
-                                                    }
-                                                }
-                                            }
-                                            if (!streamCandidate.isNullOrBlank()) break
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w("AudioLinkExtractor", "On-the-fly loader.to request error", e)
-                    }
+
+                // Tier 1A: Check if initial extraction provided a polling progress URL
+                if (streamCandidate != null && streamCandidate.startsWith("LOADER_PROGRESS:")) {
+                    val pollUrl = streamCandidate.removePrefix("LOADER_PROGRESS:")
+                    onProgress(10, 0, totalBytes, "Đang kết nối máy chủ xử lý YouTube (Tầng 1)...")
+                    streamCandidate = pollLoaderProgress(pollUrl, totalBytes, onProgress)
+                }
+
+                // Tier 1B: Primary high-speed converter endpoint
+                if (streamCandidate.isNullOrBlank() && videoId != null) {
+                    onProgress(12, 0, totalBytes, "Đang trích xuất audio chất lượng cao...")
+                    streamCandidate = tryLoaderConversion(
+                        endpoint = "https://loader.to/ajax/download.php",
+                        videoId = videoId,
+                        totalEstimatedBytes = totalBytes,
+                        onProgress = onProgress
+                    )
+                }
+
+                // Tier 2: Redundant mirror converters
+                if (streamCandidate.isNullOrBlank() && videoId != null) {
+                    onProgress(15, 0, totalBytes, "Đang chuyển sang máy chủ dự phòng (Tầng 2)...")
+                    streamCandidate = tryLoaderConversion(
+                        endpoint = "https://en.loader.to/ajax/download.php",
+                        videoId = videoId,
+                        totalEstimatedBytes = totalBytes,
+                        onProgress = onProgress
+                    ) ?: tryLoaderConversion(
+                        endpoint = "https://api.video-download-api.com/api/download.php",
+                        videoId = videoId,
+                        totalEstimatedBytes = totalBytes,
+                        onProgress = onProgress
+                    )
+                }
+
+                // Tier 3: Invidious Open Audio Streams
+                if (streamCandidate.isNullOrBlank() && videoId != null) {
+                    onProgress(20, 0, totalBytes, "Đang kết nối cổng Invidious audio (Tầng 3)...")
+                    streamCandidate = tryInvidiousStream(videoId, onProgress)
+                }
+
+                // Tier 4: Piped Open Audio Streams
+                if (streamCandidate.isNullOrBlank() && videoId != null) {
+                    onProgress(25, 0, totalBytes, "Đang kết nối cổng Piped audio (Tầng 4)...")
+                    streamCandidate = tryPipedStream(videoId, onProgress)
                 }
             }
 
-            // 3. Fallback to direct web link
+            // 2. Direct web link fallback for direct media files
             if (streamCandidate.isNullOrBlank()) {
                 streamCandidate = if (metadata.originalUrl.startsWith("http") &&
                     !metadata.originalUrl.contains("youtube.com") &&
@@ -365,30 +342,13 @@ class AudioLinkExtractor(private val context: Context) {
                 }
             }
 
-            if (!downloadedRealMedia || !targetFile.exists() || targetFile.length() < 1000) {
-                // Fallback: If network stream was blocked or unavailable, generate high quality acoustic sample
-                val durationSec = (metadata.estimatedDurationMs / 1000).toInt().coerceIn(15, 180)
-                val chords = if (metadata.source == SourceType.TIKTOK) {
-                    listOf(440.0, 523.25, 659.25, 587.33)
-                } else {
-                    listOf(329.63, 392.00, 493.88, 587.33)
-                }
-
-                val simulatedSteps = 12
-                val totalExpected = totalBytes
-                for (step in 1..simulatedSteps) {
-                    delay(50)
-                    val percent = (step * 100) / simulatedSteps
-                    val currentBytes = (totalExpected * percent) / 100
-                    val speed = "%.1f MB/s".format(2.8 + (step % 4) * 0.4)
-                    onProgress(percent.coerceAtMost(99), currentBytes, totalExpected, speed)
-                }
-
-                SampleAudioGenerator.createSampleWav(
-                    targetFile = targetFile,
-                    durationSeconds = durationSec,
-                    chordFrequencies = chords,
-                    tempoBpm = if (metadata.source == SourceType.TIKTOK) 124 else 96
+            // Verification: Ensure authentic audio was written without fake sample generation
+            if (!downloadedRealMedia || !targetFile.exists() || targetFile.length() < 5000) {
+                targetFile.delete()
+                return@withContext Result.failure(
+                    java.io.IOException(
+                        "Không thể trích xuất âm thanh từ liên kết. Máy chủ tạm thời bận hoặc video bị giới hạn khu vực/bản quyền. Vui lòng thử lại sau ít phút."
+                    )
                 )
             }
 
@@ -456,6 +416,162 @@ class AudioLinkExtractor(private val context: Context) {
             Log.e("AudioLinkExtractor", "Download failed", e)
             Result.failure(e)
         }
+    }
+
+    private suspend fun pollLoaderProgress(
+        pollUrl: String,
+        totalEstimatedBytes: Long,
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
+    ): String? = withContext(Dispatchers.IO) {
+        var resolvedUrl: String? = null
+        for (pollAttempt in 1..28) {
+            if (pollAttempt > 1) delay(1500)
+            try {
+                val pollReq = Request.Builder()
+                    .url(pollUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                    .build()
+                httpClient.newCall(pollReq).execute().use { pResp ->
+                    if (pResp.isSuccessful) {
+                        val pBody = pResp.body?.string()
+                        if (!pBody.isNullOrBlank()) {
+                            val pJson = JSONObject(pBody)
+                            val rawProgress = pJson.optInt("progress", 0)
+                            val percent = if (rawProgress in 1..1000) (rawProgress / 10).coerceIn(10, 95) else (10 + pollAttempt * 3).coerceIn(10, 95)
+                            val statusText = pJson.optString("text", "Đang xử lý âm thanh YouTube")
+                            onProgress(percent, 0, totalEstimatedBytes, "$statusText (${percent}%)...")
+
+                            val dUrl = pJson.optString("download_url", "")
+                            if (dUrl.isNotBlank() && (dUrl.startsWith("http://") || dUrl.startsWith("https://"))) {
+                                resolvedUrl = dUrl
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("AudioLinkExtractor", "Poll loader.to attempt $pollAttempt error: ${e.message}")
+            }
+            if (!resolvedUrl.isNullOrBlank()) break
+        }
+        resolvedUrl
+    }
+
+    private suspend fun tryLoaderConversion(
+        endpoint: String,
+        videoId: String,
+        totalEstimatedBytes: Long,
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$endpoint?format=mp3&url=https://www.youtube.com/watch?v=$videoId")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        val json = JSONObject(body)
+                        val immediate = json.optString("download_url", "")
+                        if (immediate.isNotBlank() && (immediate.startsWith("http://") || immediate.startsWith("https://"))) {
+                            return@withContext immediate
+                        }
+                        val progressUrl = json.optString("progress_url", "")
+                        val streamId = json.optString("id", "")
+                        val targetPoll = if (progressUrl.isNotBlank()) progressUrl else "https://loader.to/ajax/progress.php?id=$streamId"
+                        return@withContext pollLoaderProgress(targetPoll, totalEstimatedBytes, onProgress)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("AudioLinkExtractor", "Loader attempt on $endpoint failed: ${e.message}")
+        }
+        null
+    }
+
+    private suspend fun tryInvidiousStream(
+        videoId: String,
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
+    ): String? = withContext(Dispatchers.IO) {
+        val instances = listOf(
+            "https://inv.nadeko.net",
+            "https://invidious.nerdvpn.de",
+            "https://yewtu.be",
+            "https://invidious.tiekoetter.com"
+        )
+        for (instance in instances) {
+            try {
+                onProgress(20, 0, 5000000L, "Đang kết nối cổng âm thanh dự phòng...")
+                val req = Request.Builder()
+                    .url("$instance/api/v1/videos/$videoId")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val json = JSONObject(body)
+                            val adaptiveFormats = json.optJSONArray("adaptiveFormats")
+                            if (adaptiveFormats != null) {
+                                for (i in 0 until adaptiveFormats.length()) {
+                                    val fmt = adaptiveFormats.optJSONObject(i) ?: continue
+                                    val type = fmt.optString("type", "")
+                                    val url = fmt.optString("url", "")
+                                    if (type.contains("audio") && url.isNotBlank()) {
+                                        return@withContext if (url.startsWith("/")) "$instance$url" else url
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("AudioLinkExtractor", "Invidious instance $instance failed: ${e.message}")
+            }
+        }
+        null
+    }
+
+    private suspend fun tryPipedStream(
+        videoId: String,
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
+    ): String? = withContext(Dispatchers.IO) {
+        val pipedHosts = listOf("https://pipedapi.kavin.rocks", "https://api.piped.privacydev.net")
+        for (host in pipedHosts) {
+            try {
+                onProgress(25, 0, 5000000L, "Đang kết nối luồng Piped audio...")
+                val req = Request.Builder()
+                    .url("$host/streams/$videoId")
+                    .header("User-Agent", "Mozilla/5.0")
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val json = JSONObject(body)
+                            val audioStreams = json.optJSONArray("audioStreams")
+                            if (audioStreams != null && audioStreams.length() > 0) {
+                                var bestUrl: String? = null
+                                var maxBitrate = 0
+                                for (i in 0 until audioStreams.length()) {
+                                    val stream = audioStreams.optJSONObject(i) ?: continue
+                                    val sUrl = stream.optString("url", "")
+                                    val bitrate = stream.optInt("bitrate", 0)
+                                    if (sUrl.isNotBlank() && bitrate >= maxBitrate) {
+                                        maxBitrate = bitrate
+                                        bestUrl = sUrl
+                                    }
+                                }
+                                if (bestUrl != null) return@withContext bestUrl
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("AudioLinkExtractor", "Piped host $host failed: ${e.message}")
+            }
+        }
+        null
     }
 
     private fun downloadStreamWithProgress(

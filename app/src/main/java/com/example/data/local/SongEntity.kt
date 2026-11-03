@@ -24,7 +24,8 @@ data class SongEntity(
     val sourceType: String,
     val thumbnailUrl: String?,
     val addedTimestamp: Long,
-    val playCount: Int = 0
+    val playCount: Int = 0,
+    val lyrics: String? = null
 ) {
     fun toSong(): Song = Song(
         id = id,
@@ -42,7 +43,8 @@ data class SongEntity(
         sourceType = try { SourceType.valueOf(sourceType) } catch (e: Exception) { SourceType.OFFLINE },
         thumbnailUrl = thumbnailUrl,
         addedTimestamp = addedTimestamp,
-        playCount = playCount
+        playCount = playCount,
+        lyrics = lyrics
     )
 
     companion object {
@@ -62,7 +64,8 @@ data class SongEntity(
             sourceType = song.sourceType.name,
             thumbnailUrl = song.thumbnailUrl,
             addedTimestamp = song.addedTimestamp,
-            playCount = song.playCount
+            playCount = song.playCount,
+            lyrics = song.lyrics
         )
     }
 }

@@ -40,7 +40,8 @@ fun PlaylistsScreen(
     onPlayPlaylist: (Playlist, Boolean) -> Unit,
     onDeletePlaylist: (Playlist) -> Unit,
     onSongClick: (Song) -> Unit,
-    onRemoveSongFromPlaylist: (Playlist, Song) -> Unit
+    onRemoveSongFromPlaylist: (Playlist, Song) -> Unit,
+    onAddSongsToPlaylistClick: (Playlist) -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
         PlaylistDetailContent(
@@ -53,7 +54,8 @@ fun PlaylistsScreen(
             onShufflePlay = { onPlayPlaylist(selectedPlaylist, true) },
             onDeletePlaylist = { onDeletePlaylist(selectedPlaylist) },
             onSongClick = onSongClick,
-            onRemoveSong = { song -> onRemoveSongFromPlaylist(selectedPlaylist, song) }
+            onRemoveSong = { song -> onRemoveSongFromPlaylist(selectedPlaylist, song) },
+            onAddSongsClick = { onAddSongsToPlaylistClick(selectedPlaylist) }
         )
     } else {
         PlaylistListContent(
@@ -74,26 +76,28 @@ fun PlaylistListContent(
     onPlayPlaylist: (Playlist, Boolean) -> Unit,
     onDeletePlaylist: (Playlist) -> Unit
 ) {
+    val theme = LocalAppTheme.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(theme.background)
             .testTag("playlists_screen")
     ) {
         // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column {
                 Text(
                     text = "Danh sách phát",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold,
-                    color = NeonCyan
+                    color = theme.primary
                 )
                 Text(
                     text = "${playlists.size} playlists đã tạo",
@@ -161,7 +165,7 @@ fun PlaylistListContent(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 96.dp)
+                contentPadding = PaddingValues(bottom = 20.dp, top = 4.dp)
             ) {
                 items(playlists, key = { it.id }) { playlist ->
                     var showMenu by remember { mutableStateOf(false) }
@@ -290,7 +294,8 @@ fun PlaylistDetailContent(
     onShufflePlay: () -> Unit,
     onDeletePlaylist: () -> Unit,
     onSongClick: (Song) -> Unit,
-    onRemoveSong: (Song) -> Unit
+    onRemoveSong: (Song) -> Unit,
+    onAddSongsClick: () -> Unit = {}
 ) {
     BackHandler { onBack() }
 
@@ -385,25 +390,26 @@ fun PlaylistDetailContent(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Play All and Shuffle Buttons
+        // Play All, Shuffle and Add Songs Buttons
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
                 onClick = onPlayAll,
                 enabled = songs.isNotEmpty(),
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(1.1f)
                     .testTag("playlist_play_all_btn"),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = NeonCyan)
+                colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF031A24))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Phát tất cả", color = Color(0xFF031A24), fontWeight = FontWeight.Bold)
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF031A24), modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Phát tất cả", color = Color(0xFF031A24), fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
 
             OutlinedButton(
@@ -413,11 +419,26 @@ fun PlaylistDetailContent(
                     .weight(1f)
                     .testTag("playlist_shuffle_btn"),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder)
+                border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
             ) {
-                Icon(Icons.Default.Shuffle, contentDescription = null, tint = NeonPurple)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Xáo trộn", color = TextPrimary)
+                Icon(Icons.Default.Shuffle, contentDescription = null, tint = NeonPurple, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Xáo trộn", color = TextPrimary, fontSize = 12.sp)
+            }
+
+            Button(
+                onClick = onAddSongsClick,
+                modifier = Modifier
+                    .weight(1.1f)
+                    .testTag("playlist_add_songs_btn"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = NeonPurple),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+            ) {
+                Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("+ Thêm bài", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
 
@@ -431,12 +452,27 @@ fun PlaylistDetailContent(
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "Playlist này chưa có bài hát nào.\nHãy vào Thư viện hoặc Tải từ Link rồi chọn thêm vào playlist này!",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Playlist này chưa có bài hát nào.\nHãy bấm nút bên dưới để chọn thêm bài hát vào playlist!",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Button(
+                        onClick = onAddSongsClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonPurple),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("empty_playlist_add_btn")
+                    ) {
+                        Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Chọn bài hát thêm vào", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         } else {
             LazyColumn(
@@ -444,7 +480,7 @@ fun PlaylistDetailContent(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 96.dp)
+                contentPadding = PaddingValues(bottom = 20.dp, top = 4.dp)
             ) {
                 items(songs, key = { it.id }) { song ->
                     val isCurrent = currentPlayingSong?.id == song.id

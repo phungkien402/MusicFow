@@ -44,6 +44,7 @@ fun DownloaderScreen(
     onPlayCompletedSong: (Song) -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
+    val theme = LocalAppTheme.current
 
     val sampleLinks = listOf(
         Pair("🔥 TikTok Viral Beat", "https://vt.tiktok.com/ZS6sample123"),
@@ -55,20 +56,20 @@ fun DownloaderScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(theme.background)
             .testTag("downloader_screen")
     ) {
         // Screen Header
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 20.dp, vertical = 14.dp)
         ) {
             Text(
                 text = "Tải nhạc từ Link",
-                style = MaterialTheme.typography.headlineMedium,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.ExtraBold,
-                color = NeonCyan
+                color = theme.primary
             )
             Text(
                 text = "Hỗ trợ tách âm thanh YouTube, TikTok & Web URL",
@@ -82,7 +83,7 @@ fun DownloaderScreen(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(bottom = 96.dp)
+            contentPadding = PaddingValues(bottom = 20.dp, top = 4.dp)
         ) {
             // Hero Card
             item {

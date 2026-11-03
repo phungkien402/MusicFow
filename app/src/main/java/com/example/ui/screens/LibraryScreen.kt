@@ -40,16 +40,21 @@ fun LibraryScreen(
     isPlaying: Boolean,
     currentFilter: LibraryFilter,
     searchQuery: String,
+    filterCounts: Map<LibraryFilter, Int> = emptyMap(),
     isImporting: Boolean = false,
     onFilterChange: (LibraryFilter) -> Unit,
     onSearchChange: (String) -> Unit,
     onSongClick: (Song) -> Unit,
     onToggleFavorite: (Song) -> Unit,
     onAddToPlaylistClick: (Song) -> Unit,
+    onEditSongClick: (Song) -> Unit = {},
     onDeleteSongClick: (Song) -> Unit,
     onScanDeviceAudio: () -> Unit,
     onImportUris: (List<android.net.Uri>) -> Unit,
-    onNavigateToDownloader: () -> Unit
+    onNavigateToDownloader: () -> Unit,
+    onOpenThemeDialog: () -> Unit = {},
+    onOpenBackupDialog: () -> Unit = {},
+    onAddToQueueNext: (Song) -> Unit = {}
 ) {
     // Document Picker (Storage Access Framework: Google Drive, Local Files, Downloads, etc.)
     val documentPickerLauncher = rememberLauncherForActivityResult(
@@ -82,98 +87,153 @@ fun LibraryScreen(
     )
 
     var isSearchExpanded by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    val theme = LocalAppTheme.current
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(theme.background)
             .testTag("library_screen")
     ) {
-        // App Header
+        // Spacious Responsive App Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column {
+            // App Branding & Track Counter
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "SoundFlow",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = theme.primary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = theme.primary.copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, theme.primary.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = "HI-FI",
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = theme.primary,
+                            fontSize = 9.sp
+                        )
+                    }
+                }
                 Text(
-                    text = "SoundFlow",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = NeonCyan
-                )
-                Text(
-                    text = "Trình phát nhạc & Tải ngoại tuyến",
+                    text = "${songs.size} bài hát ngoại tuyến",
                     style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
+                    color = TextSecondary,
+                    fontSize = 11.sp
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // Upload / Select from Google Drive or Device
-                Button(
-                    onClick = { documentPickerLauncher.launch(audioMimeTypes) },
-                    colors = ButtonDefaults.buttonColors(containerColor = NeonPurple),
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier.testTag("upload_audio_picker_btn")
-                ) {
-                    Icon(
-                        Icons.Default.CloudUpload,
-                        contentDescription = "Chọn tệp từ Drive/Máy",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Tải lên",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
-
+            // Streamlined Header Actions - Zero Crowding
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 // Search Toggle
                 IconButton(
                     onClick = { isSearchExpanded = !isSearchExpanded },
                     modifier = Modifier
-                        .size(38.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
-                        .background(DarkSurfaceVariant)
+                        .background(theme.surfaceVariant)
                         .testTag("search_toggle_btn")
                 ) {
                     Icon(
                         imageVector = if (isSearchExpanded) Icons.Default.Close else Icons.Default.Search,
                         contentDescription = "Tìm kiếm",
-                        tint = NeonCyan,
+                        tint = if (isSearchExpanded) theme.primary else TextPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
 
-                // Scan Device Audio Button
+                // Quick Upload from Drive/Files Button
                 IconButton(
-                    onClick = {
-                        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            Manifest.permission.READ_MEDIA_AUDIO
-                        } else {
-                            Manifest.permission.READ_EXTERNAL_STORAGE
-                        }
-                        permissionLauncher.launch(perm)
-                    },
+                    onClick = { documentPickerLauncher.launch(audioMimeTypes) },
                     modifier = Modifier
-                        .size(38.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
-                        .background(DarkSurfaceVariant)
-                        .testTag("scan_device_btn")
+                        .background(theme.surfaceVariant)
+                        .testTag("upload_audio_picker_btn")
                 ) {
                     Icon(
-                        Icons.Default.FolderOpen,
-                        contentDescription = "Quét nhanh thư mục",
-                        tint = TextSecondary,
+                        Icons.Default.CloudUpload,
+                        contentDescription = "Chọn tệp từ Drive/Máy",
+                        tint = theme.secondary,
                         modifier = Modifier.size(20.dp)
                     )
+                }
+
+                // Overflow Settings Menu (Theme, Backup, Quick Scan)
+                Box {
+                    IconButton(
+                        onClick = { showOverflowMenu = true },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(theme.surfaceVariant)
+                            .testTag("library_more_btn")
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "Tuỳ chọn thêm",
+                            tint = TextPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showOverflowMenu,
+                        onDismissRequest = { showOverflowMenu = false },
+                        modifier = Modifier
+                            .background(theme.surface)
+                            .border(1.dp, theme.cardBorder, RoundedCornerShape(14.dp))
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Đổi giao diện", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null, tint = theme.primary) },
+                            onClick = {
+                                showOverflowMenu = false
+                                onOpenThemeDialog()
+                            },
+                            modifier = Modifier.testTag("theme_btn")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Sao lưu & Khôi phục", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.SettingsBackupRestore, contentDescription = null, tint = theme.secondary) },
+                            onClick = {
+                                showOverflowMenu = false
+                                onOpenBackupDialog()
+                            },
+                            modifier = Modifier.testTag("backup_btn")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Quét thư mục máy", color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = theme.accent) },
+                            onClick = {
+                                showOverflowMenu = false
+                                val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    Manifest.permission.READ_MEDIA_AUDIO
+                                } else {
+                                    Manifest.permission.READ_EXTERNAL_STORAGE
+                                }
+                                permissionLauncher.launch(perm)
+                            },
+                            modifier = Modifier.testTag("scan_device_btn")
+                        )
+                    }
                 }
             }
         }
@@ -265,8 +325,9 @@ fun LibraryScreen(
                         .clickable { onFilterChange(filter) }
                         .testTag("filter_chip_${filter.name}")
                 ) {
+                    val count = filterCounts[filter] ?: 0
                     Text(
-                        text = filter.label,
+                        text = if (count > 0) "${filter.label} ($count)" else filter.label,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
@@ -410,7 +471,7 @@ fun LibraryScreen(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 90.dp) // padding for mini player
+                contentPadding = PaddingValues(bottom = 20.dp, top = 4.dp)
             ) {
                 // Quick Upload Card
                 item {
@@ -468,6 +529,8 @@ fun LibraryScreen(
                         onClick = { onSongClick(song) },
                         onToggleFavorite = { onToggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylistClick(song) },
+                        onAddToQueueNext = { onAddToQueueNext(song) },
+                        onEdit = { onEditSongClick(song) },
                         onDelete = { onDeleteSongClick(song) }
                     )
                 }
@@ -484,6 +547,8 @@ fun SongListItem(
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
+    onAddToQueueNext: () -> Unit = {},
+    onEdit: () -> Unit = {},
     onDelete: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -634,11 +699,27 @@ fun SongListItem(
                         }
                     )
                     DropdownMenuItem(
+                        text = { Text("Phát tiếp theo", color = TextPrimary) },
+                        leadingIcon = { Icon(Icons.Default.QueueMusic, contentDescription = null, tint = NeonCyan) },
+                        onClick = {
+                            showMenu = false
+                            onAddToQueueNext()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Thêm vào Playlist", color = TextPrimary) },
                         leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = NeonPurple) },
                         onClick = {
                             showMenu = false
                             onAddToPlaylist()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Đổi tên bài hát", color = TextPrimary) },
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = NeonCyan) },
+                        onClick = {
+                            showMenu = false
+                            onEdit()
                         }
                     )
                     DropdownMenuItem(

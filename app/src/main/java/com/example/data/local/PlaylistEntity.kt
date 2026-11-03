@@ -42,3 +42,21 @@ data class PlaylistSongCrossRef(
     val songId: Long,
     val addedTimestamp: Long = System.currentTimeMillis()
 )
+
+data class PlaylistWithCount(
+    val id: Long,
+    val name: String,
+    val description: String,
+    val coverColorHex: String,
+    val createdTimestamp: Long,
+    val songCount: Int
+) {
+    fun toPlaylist(): Playlist = Playlist(
+        id = id,
+        name = name,
+        description = description,
+        coverColorHex = coverColorHex,
+        songCount = songCount,
+        createdTimestamp = createdTimestamp
+    )
+}
