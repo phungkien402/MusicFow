@@ -313,7 +313,8 @@ fun SoundFlowApp(
                             onUrlChange = { viewModel.setInputUrl(it) },
                             onAnalyzeClick = { viewModel.analyzeUrl() },
                             onRemoveDownloadTask = { id -> viewModel.removeDownloadTask(id) },
-                            onPlayCompletedSong = { song -> viewModel.playSong(song, allSongs) }
+                            onPlayCompletedSong = { song -> viewModel.playSong(song, allSongs) },
+                            onRetryDownloadTask = { id -> viewModel.retryDownload(id) }
                         )
                     }
 

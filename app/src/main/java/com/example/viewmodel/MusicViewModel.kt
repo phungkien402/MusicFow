@@ -29,6 +29,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import com.example.data.downloader.DownloadWorker
+import com.example.data.downloader.SourceKey
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.UUID
 
 enum class AppTab(val title: String) {
@@ -125,8 +137,128 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedPlaylistId = MutableStateFlow<Long?>(null)
     val selectedPlaylistId: StateFlow<Long?> = _selectedPlaylistId.asStateFlow()
 
-    private val _activeDownloads = MutableStateFlow<List<DownloadTask>>(emptyList())
-    val activeDownloads: StateFlow<List<DownloadTask>> = _activeDownloads.asStateFlow()
+    private data class LocalTaskInfo(
+        val metadata: ParsedLinkMetadata,
+        val quality: AudioQuality,
+        val targetPlaylistId: Long?,
+        val targetPlaylistName: String?
+    )
+
+    private val workManager by lazy { WorkManager.getInstance(getApplication()) }
+    private val hiddenTaskIds = MutableStateFlow<Set<String>>(emptySet())
+    private val localTaskMap = ConcurrentHashMap<String, LocalTaskInfo>()
+    private val localTaskMapByUrl = ConcurrentHashMap<String, LocalTaskInfo>()
+    private val notifiedSuccessIds = Collections.synchronizedSet(mutableSetOf<String>())
+
+    val activeDownloads: StateFlow<List<DownloadTask>> = combine(
+        workManager.getWorkInfosByTagFlow(DownloadWorker.TAG),
+        hiddenTaskIds
+    ) { workInfos, hidden ->
+        workInfos
+            .filter { !hidden.contains(it.id.toString()) }
+            .map { workInfo ->
+                val taskId = workInfo.id.toString()
+                val urlFromTag = workInfo.tags.firstOrNull { it.startsWith("url:") }?.removePrefix("url:")
+                val uniqueKey = urlFromTag?.let { SourceKey.of(it) } ?: ""
+                val info = localTaskMap[taskId] ?: localTaskMapByUrl[uniqueKey]
+
+                val title = info?.metadata?.title
+                    ?: workInfo.tags.firstOrNull { it.startsWith("title:") }?.removePrefix("title:")
+                    ?: "Bài hát đang tải"
+                val artist = info?.metadata?.artist
+                    ?: workInfo.tags.firstOrNull { it.startsWith("artist:") }?.removePrefix("artist:")
+                    ?: ""
+                val url = info?.metadata?.originalUrl
+                    ?: urlFromTag
+                    ?: ""
+                val source = info?.metadata?.source
+                    ?: workInfo.tags.firstOrNull { it.startsWith("source:") }?.removePrefix("source:")?.let {
+                        try { SourceType.valueOf(it) } catch (_: Exception) { null }
+                    } ?: SourceType.DIRECT_URL
+                val quality = info?.quality
+                    ?: workInfo.tags.firstOrNull { it.startsWith("quality:") }?.removePrefix("quality:")?.let {
+                        AudioQuality.byId(it)
+                    } ?: AudioQuality.DEFAULT
+                val targetPlaylistId = info?.targetPlaylistId
+                    ?: workInfo.tags.firstOrNull { it.startsWith("playlistId:") }?.removePrefix("playlistId:")?.toLongOrNull()
+                val targetPlaylistName = info?.targetPlaylistName
+                    ?: workInfo.tags.firstOrNull { it.startsWith("playlistName:") }?.removePrefix("playlistName:")
+
+                val progress = workInfo.progress.getInt(DownloadWorker.KEY_PROGRESS, 0)
+                val speed = workInfo.progress.getString(DownloadWorker.KEY_SPEED) ?: ""
+
+                val status: DownloadStatus
+                val progressPercent: Int
+                val downloadSpeedText: String
+                var completedSongId: Long? = null
+                var errorMessage: String? = null
+
+                when (workInfo.state) {
+                    WorkInfo.State.ENQUEUED -> {
+                        status = DownloadStatus.DOWNLOADING
+                        progressPercent = 0
+                        downloadSpeedText = "Đang chờ tải..."
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        status = DownloadStatus.DOWNLOADING
+                        progressPercent = progress
+                        downloadSpeedText = speed.ifBlank { "Đang tải..." }
+                    }
+                    WorkInfo.State.SUCCEEDED -> {
+                        status = DownloadStatus.COMPLETED
+                        progressPercent = 100
+                        downloadSpeedText = "Đã lưu vào bộ nhớ"
+                        completedSongId = workInfo.outputData.getLong(DownloadWorker.KEY_SONG_ID, -1L).takeIf { it > 0 }
+                        if (notifiedSuccessIds.add(taskId)) {
+                            _successMessage.value = "Tải thành công: $title"
+                        }
+                    }
+                    WorkInfo.State.FAILED -> {
+                        status = DownloadStatus.FAILED
+                        progressPercent = progress
+                        downloadSpeedText = ""
+                        errorMessage = workInfo.outputData.getString(DownloadWorker.KEY_ERROR) ?: "Tải bài hát thất bại"
+                    }
+                    WorkInfo.State.CANCELLED -> {
+                        status = DownloadStatus.FAILED
+                        progressPercent = progress
+                        downloadSpeedText = ""
+                        errorMessage = "Đã huỷ tải xuống"
+                    }
+                    WorkInfo.State.BLOCKED -> {
+                        status = DownloadStatus.DOWNLOADING
+                        progressPercent = 0
+                        downloadSpeedText = "Đang chờ điều kiện..."
+                    }
+                }
+
+                DownloadTask(
+                    id = taskId,
+                    title = title,
+                    artist = artist,
+                    url = url,
+                    source = source,
+                    quality = quality,
+                    targetPlaylistId = targetPlaylistId,
+                    targetPlaylistName = targetPlaylistName,
+                    progressPercent = progressPercent,
+                    downloadSpeedText = downloadSpeedText,
+                    status = status,
+                    errorMessage = errorMessage,
+                    completedSongId = completedSongId
+                )
+            }
+            .sortedWith(
+                compareBy<DownloadTask> {
+                    when (it.status) {
+                        DownloadStatus.DOWNLOADING -> 0
+                        DownloadStatus.FAILED -> 1
+                        DownloadStatus.COMPLETED -> 2
+                        else -> 3
+                    }
+                }
+            )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -318,72 +450,120 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             artist = customArtist?.takeIf { it.isNotBlank() } ?: meta.artist
         )
 
-        val taskId = UUID.randomUUID().toString()
-        val newTask = DownloadTask(
-            id = taskId,
-            title = finalMetadata.title,
-            artist = finalMetadata.artist,
-            url = finalMetadata.originalUrl,
-            source = finalMetadata.source,
-            quality = quality,
-            targetPlaylistId = targetPlaylistId,
-            targetPlaylistName = targetPlaylist?.name,
-            progressPercent = 0,
-            status = DownloadStatus.DOWNLOADING
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val inputData = DownloadWorker.buildInput(finalMetadata, quality, targetPlaylistId)
+
+        val workRequestBuilder = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .addTag(DownloadWorker.TAG)
+            .addTag("title:${finalMetadata.title}")
+            .addTag("artist:${finalMetadata.artist}")
+            .addTag("url:${finalMetadata.originalUrl}")
+            .addTag("source:${finalMetadata.source.name}")
+            .addTag("quality:${quality.id}")
+
+        if (targetPlaylistId != null) {
+            workRequestBuilder.addTag("playlistId:$targetPlaylistId")
+        }
+        if (!targetPlaylist?.name.isNullOrBlank()) {
+            workRequestBuilder.addTag("playlistName:${targetPlaylist?.name}")
+        }
+
+        val workRequest = workRequestBuilder.setInputData(inputData).build()
+        val taskId = workRequest.id.toString()
+
+        val info = LocalTaskInfo(finalMetadata, quality, targetPlaylistId, targetPlaylist?.name)
+        localTaskMap[taskId] = info
+        val uniqueName = SourceKey.of(finalMetadata.originalUrl).ifBlank { UUID.randomUUID().toString() }
+        localTaskMapByUrl[uniqueName] = info
+
+        hiddenTaskIds.value = hiddenTaskIds.value - taskId
+
+        workManager.enqueueUniqueWork(
+            uniqueName,
+            ExistingWorkPolicy.KEEP,
+            workRequest
         )
 
-        _activeDownloads.value = listOf(newTask) + _activeDownloads.value
         _showQualityDialog.value = false
         _analyzedMetadata.value = null
         _inputUrl.value = ""
-
-        viewModelScope.launch {
-            val downloadResult = linkExtractor.downloadAudio(
-                metadata = finalMetadata,
-                quality = quality
-            ) { percent, downloaded, total, speed ->
-                updateDownloadTask(taskId) { current ->
-                    current.copy(
-                        progressPercent = percent,
-                        downloadedBytes = downloaded,
-                        totalBytes = total,
-                        downloadSpeedText = speed,
-                        status = DownloadStatus.DOWNLOADING
-                    )
-                }
-            }
-
-            downloadResult.onSuccess { downloadedSong ->
-                val savedId = repository.saveDownloadedSong(downloadedSong, targetPlaylistId)
-                updateDownloadTask(taskId) { current ->
-                    current.copy(
-                        progressPercent = 100,
-                        status = DownloadStatus.COMPLETED,
-                        downloadSpeedText = "Đã lưu vào bộ nhớ",
-                        completedSongId = savedId
-                    )
-                }
-                _successMessage.value = "Tải thành công: ${downloadedSong.title}"
-            }.onFailure { err ->
-                updateDownloadTask(taskId) { current ->
-                    current.copy(
-                        status = DownloadStatus.FAILED,
-                        errorMessage = err.localizedMessage ?: "Tải bài hát thất bại"
-                    )
-                }
-                _errorMessage.value = "Lỗi khi tải bài hát: ${err.message}"
-            }
-        }
     }
 
-    private fun updateDownloadTask(taskId: String, transform: (DownloadTask) -> DownloadTask) {
-        _activeDownloads.value = _activeDownloads.value.map {
-            if (it.id == taskId) transform(it) else it
+    fun retryDownload(taskId: String) {
+        val task = activeDownloads.value.find { it.id == taskId }
+        val localInfo = localTaskMap[taskId]
+        val metadata = localInfo?.metadata ?: task?.let {
+            ParsedLinkMetadata(
+                originalUrl = it.url,
+                source = it.source,
+                title = it.title,
+                artist = it.artist,
+                thumbnailUrl = null,
+                estimatedDurationMs = 0L,
+                directStreamUrl = null
+            )
+        } ?: return
+        val quality = localInfo?.quality ?: task?.quality ?: AudioQuality.DEFAULT
+        val targetPlaylistId = localInfo?.targetPlaylistId ?: task?.targetPlaylistId
+        val targetPlaylistName = localInfo?.targetPlaylistName ?: task?.targetPlaylistName
+
+        try {
+            workManager.cancelWorkById(UUID.fromString(taskId))
+            workManager.pruneWork()
+        } catch (_: Exception) {}
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val inputData = DownloadWorker.buildInput(metadata, quality, targetPlaylistId)
+
+        val workRequestBuilder = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .addTag(DownloadWorker.TAG)
+            .addTag("title:${metadata.title}")
+            .addTag("artist:${metadata.artist}")
+            .addTag("url:${metadata.originalUrl}")
+            .addTag("source:${metadata.source.name}")
+            .addTag("quality:${quality.id}")
+
+        if (targetPlaylistId != null) {
+            workRequestBuilder.addTag("playlistId:$targetPlaylistId")
         }
+        if (!targetPlaylistName.isNullOrBlank()) {
+            workRequestBuilder.addTag("playlistName:$targetPlaylistName")
+        }
+
+        val workRequest = workRequestBuilder.setInputData(inputData).build()
+        val newTaskId = workRequest.id.toString()
+
+        val newLocalInfo = LocalTaskInfo(metadata, quality, targetPlaylistId, targetPlaylistName)
+        localTaskMap[newTaskId] = newLocalInfo
+        val uniqueName = SourceKey.of(metadata.originalUrl).ifBlank { UUID.randomUUID().toString() }
+        localTaskMapByUrl[uniqueName] = newLocalInfo
+
+        hiddenTaskIds.value = (hiddenTaskIds.value - newTaskId) + taskId
+
+        workManager.enqueueUniqueWork(
+            uniqueName,
+            ExistingWorkPolicy.REPLACE,
+            workRequest
+        )
     }
 
     fun removeDownloadTask(taskId: String) {
-        _activeDownloads.value = _activeDownloads.value.filter { it.id != taskId }
+        try {
+            workManager.cancelWorkById(UUID.fromString(taskId))
+            workManager.pruneWork()
+        } catch (_: Exception) {}
+        hiddenTaskIds.value = hiddenTaskIds.value + taskId
+        localTaskMap.remove(taskId)
     }
 
     // Player controls

@@ -41,7 +41,8 @@ fun DownloaderScreen(
     onUrlChange: (String) -> Unit,
     onAnalyzeClick: () -> Unit,
     onRemoveDownloadTask: (String) -> Unit,
-    onPlayCompletedSong: (Song) -> Unit
+    onPlayCompletedSong: (Song) -> Unit,
+    onRetryDownloadTask: (String) -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     val theme = LocalAppTheme.current
@@ -349,6 +350,7 @@ fun DownloaderScreen(
                     DownloadTaskCard(
                         task = task,
                         onRemove = { onRemoveDownloadTask(task.id) },
+                        onRetry = { onRetryDownloadTask(task.id) },
                         onPlayClick = {
                             val matchedSong = allSongs.find { s -> s.id == task.completedSongId || s.title == task.title }
                             if (matchedSong != null) {
@@ -366,7 +368,8 @@ fun DownloaderScreen(
 fun DownloadTaskCard(
     task: DownloadTask,
     onRemove: () -> Unit,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    onRetry: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier
@@ -473,6 +476,28 @@ fun DownloadTaskCard(
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = "Phát bài đã tải", tint = NeonCyan)
                     }
+                } else if (task.status == DownloadStatus.FAILED) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(
+                            onClick = onRetry,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(NeonCyan.copy(alpha = 0.15f))
+                                .testTag("retry_download_${task.id}")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Thử lại", tint = NeonCyan, modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(
+                            onClick = onRemove,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Huỷ", tint = TextMuted)
+                        }
+                    }
                 } else {
                     IconButton(
                         onClick = onRemove,
@@ -526,15 +551,33 @@ fun DownloadTaskCard(
                 }
             } else if (task.status == DownloadStatus.FAILED) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = NeonPink, modifier = Modifier.size(16.dp))
-                    Text(
-                        text = task.errorMessage ?: "Tải thất bại",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = NeonPink
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = NeonPink, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = task.errorMessage ?: "Tải thất bại",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NeonPink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(
+                        onClick = onRetry,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.testTag("btn_retry_${task.id}")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Thử lại", color = NeonCyan, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
         }
