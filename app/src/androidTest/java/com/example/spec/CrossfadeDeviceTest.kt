@@ -58,6 +58,8 @@ class CrossfadeDeviceTest {
     private fun setRepeat(m: RepeatMode) = main { repeat(3) { if (player.repeatMode.value != m) player.cycleRepeatMode() } }
     private val base get() = main { player.getBaseVolume() }
 
+    private fun waitPlaying() { val end = System.currentTimeMillis() + 5000; while (System.currentTimeMillis() < end && main { player.currentPositionMs.value } < 300) Thread.sleep(50) }
+
     @Before
     fun setUp() {
         context = inst.targetContext
@@ -121,6 +123,7 @@ class CrossfadeDeviceTest {
         val a = song(6, 349.0); val b = song(7, 494.0)
         setRepeat(RepeatMode.OFF)
         main { player.setQueue(listOf(a, b), 0) }
+        waitPlaying()
         main { player.seekTo(SONG_S * 1000L - FADE_S * 1000L - 300) }
         record(900, "xf4-dang-chuyen")
         main { player.pause() }
@@ -140,6 +143,7 @@ class CrossfadeDeviceTest {
         val a = song(8, 440.0); val b = song(9, 660.0)
         setRepeat(RepeatMode.OFF)
         main { player.setQueue(listOf(a, b), 0) }
+        waitPlaying()
         main { player.seekTo(SONG_S * 1000L - 1500) }
         val s = record(3500, "xf5")
         assertTrue(s.any { it.current == b.id })
