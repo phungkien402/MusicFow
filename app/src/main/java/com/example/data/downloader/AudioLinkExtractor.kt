@@ -7,13 +7,9 @@ import com.example.data.model.AudioQuality
 import com.example.data.model.Song
 import com.example.data.model.SourceType
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -32,7 +28,10 @@ data class ParsedLinkMetadata(
     val directStreamUrl: String? = null
 )
 
-class AudioLinkExtractor(private val context: Context) {
+class AudioLinkExtractor(
+    private val context: Context,
+    private val youTubeResolver: YouTubeAudioResolver = NewPipeYouTubeResolver()
+) {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -71,80 +70,25 @@ class AudioLinkExtractor(private val context: Context) {
         }
     }
 
-    private fun extractYouTubeMetadata(url: String): Result<ParsedLinkMetadata> {
+    private suspend fun extractYouTubeMetadata(url: String): Result<ParsedLinkMetadata> {
         val videoId = parseYouTubeId(url)
-        var title = "YouTube Audio Track"
-        var artist = "YouTube Creator"
-        var thumb = if (videoId != null) "https://img.youtube.com/vi/$videoId/hqdefault.jpg" else null
-        var directStream: String? = null
+            ?: return Result.failure(IllegalArgumentException("Không tìm thấy video ID từ URL YouTube"))
 
-        if (videoId != null) {
-            // 1. Primary: High-speed YouTube to MP3 converter engine
-            try {
-                val loaderReq = Request.Builder()
-                    .url("https://loader.to/ajax/download.php?format=mp3&url=https://www.youtube.com/watch?v=$videoId")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                    .build()
-                httpClient.newCall(loaderReq).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val body = resp.body?.string()
-                        if (!body.isNullOrBlank()) {
-                            val json = JSONObject(body)
-                            if (json.optBoolean("success", false)) {
-                                val t = json.optString("title", "")
-                                if (t.isNotBlank()) title = t
-                                val img = json.optString("thumbnail_url", "")
-                                if (img.isNotBlank()) thumb = img
-
-                                val immediate = json.optString("download_url", "")
-                                if (immediate.isNotBlank() && (immediate.startsWith("http://") || immediate.startsWith("https://"))) {
-                                    directStream = immediate
-                                } else {
-                                    val progressUrl = json.optString("progress_url", "")
-                                    val streamId = json.optString("id", "")
-                                    val pollTarget = if (progressUrl.isNotBlank()) progressUrl else "https://loader.to/ajax/progress.php?id=$streamId"
-                                    directStream = "LOADER_PROGRESS:$pollTarget"
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AudioLinkExtractor", "loader.to metadata lookup: ${e.message}")
-            }
-
-            // 2. Secondary fallback: YouTube oEmbed API for real title and author
-            if (title == "YouTube Audio Track") {
-                try {
-                    val oembedUrl = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json"
-                    val request = Request.Builder().url(oembedUrl).build()
-                    httpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            val body = response.body?.string()
-                            if (!body.isNullOrBlank()) {
-                                val json = JSONObject(body)
-                                title = json.optString("title", title)
-                                artist = json.optString("author_name", artist)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (videoId != null) {
-                        title = "YouTube Video #$videoId"
-                    }
-                }
-            }
+        val infoRes = youTubeResolver.resolve(videoId)
+        if (infoRes.isFailure) {
+            return Result.failure(infoRes.exceptionOrNull() ?: Exception("Lỗi khi phân tích YouTube"))
         }
 
+        val info = infoRes.getOrThrow()
         return Result.success(
             ParsedLinkMetadata(
                 originalUrl = url,
                 source = SourceType.YOUTUBE,
-                title = title,
-                artist = artist,
-                thumbnailUrl = thumb,
-                estimatedDurationMs = 215000L,
-                directStreamUrl = directStream
+                title = info.title,
+                artist = info.uploader,
+                thumbnailUrl = info.thumbnailUrl,
+                estimatedDurationMs = info.durationMs,
+                directStreamUrl = null
             )
         )
     }
@@ -254,83 +198,51 @@ class AudioLinkExtractor(private val context: Context) {
         quality: AudioQuality,
         onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
     ): Result<Song> = withContext(Dispatchers.IO) {
+        val downloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads").apply { mkdirs() }
+        val normalizedTitle = java.text.Normalizer.normalize(metadata.title, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}"), "")
+            .replace('đ', 'd')
+            .replace('Đ', 'D')
+        val sanitized = normalizedTitle
+            .replace(Regex("[^a-zA-Z0-9_-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(40)
+        val sanitizedTitle = if (sanitized.isNotEmpty()) sanitized else "track"
+        val extension = when (quality.format) {
+            AudioFormat.WAV -> "wav"
+            AudioFormat.M4A -> "m4a"
+            AudioFormat.FLAC -> "flac"
+            else -> "mp3"
+        }
+        val targetFile = File(downloadDir, "${sanitizedTitle}_${System.currentTimeMillis()}.$extension")
+
         try {
-            val downloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads").apply { mkdirs() }
-            val normalizedTitle = java.text.Normalizer.normalize(metadata.title, java.text.Normalizer.Form.NFD)
-                .replace(Regex("\\p{M}"), "")
-                .replace('đ', 'd')
-                .replace('Đ', 'D')
-            val sanitized = normalizedTitle
-                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                .replace(Regex("_+"), "_")
-                .trim('_')
-                .take(40)
-            val sanitizedTitle = if (sanitized.isNotEmpty()) sanitized else "track"
-            val extension = when (quality.format) {
-                AudioFormat.WAV -> "wav"
-                AudioFormat.M4A -> "m4a"
-                AudioFormat.FLAC -> "flac"
-                else -> "mp3"
-            }
-            val targetFile = File(downloadDir, "${sanitizedTitle}_${System.currentTimeMillis()}.$extension")
-
-            var downloadedBytes = 0L
-            var totalBytes = (4.5 * 1024 * 1024 * quality.estimatedSizeFactor).toLong() // estimated 4.5MB * factor
-
             var streamCandidate = metadata.directStreamUrl
 
-            // 1. YouTube Multi-Source Resilient Extraction Engine
             if (metadata.source == SourceType.YOUTUBE) {
                 val videoId = parseYouTubeId(metadata.originalUrl)
+                    ?: run {
+                        targetFile.delete()
+                        return@withContext Result.failure(IllegalArgumentException("Không tìm thấy ID video YouTube"))
+                    }
 
-                // Tier 1A: Check if initial extraction provided a polling progress URL
-                if (streamCandidate != null && streamCandidate.startsWith("LOADER_PROGRESS:")) {
-                    val pollUrl = streamCandidate.removePrefix("LOADER_PROGRESS:")
-                    onProgress(10, 0, totalBytes, "Đang kết nối máy chủ xử lý YouTube (Tầng 1)...")
-                    streamCandidate = pollLoaderProgress(pollUrl, totalBytes, onProgress)
+                onProgress(5, 0, (4.5 * 1024 * 1024 * quality.estimatedSizeFactor).toLong(), "Đang phân tích luồng âm thanh YouTube...")
+                val res = youTubeResolver.resolve(videoId)
+                if (res.isFailure) {
+                    targetFile.delete()
+                    val msg = res.exceptionOrNull()?.message ?: "Lỗi giải mã luồng YouTube"
+                    return@withContext Result.failure(java.io.IOException("Lỗi giải mã YouTube: $msg"))
                 }
-
-                // Tier 1B: Primary high-speed converter endpoint
-                if (streamCandidate.isNullOrBlank() && videoId != null) {
-                    onProgress(12, 0, totalBytes, "Đang trích xuất audio chất lượng cao...")
-                    streamCandidate = tryLoaderConversion(
-                        endpoint = "https://loader.to/ajax/download.php",
-                        videoId = videoId,
-                        totalEstimatedBytes = totalBytes,
-                        onProgress = onProgress
-                    )
+                val info = res.getOrThrow()
+                val best = info.audio
+                if (best == null || best.url.isBlank()) {
+                    targetFile.delete()
+                    return@withContext Result.failure(java.io.IOException("Không tìm thấy luồng âm thanh phù hợp cho video này"))
                 }
-
-                // Tier 2: Redundant mirror converters
-                if (streamCandidate.isNullOrBlank() && videoId != null) {
-                    onProgress(15, 0, totalBytes, "Đang chuyển sang máy chủ dự phòng (Tầng 2)...")
-                    streamCandidate = tryLoaderConversion(
-                        endpoint = "https://en.loader.to/ajax/download.php",
-                        videoId = videoId,
-                        totalEstimatedBytes = totalBytes,
-                        onProgress = onProgress
-                    ) ?: tryLoaderConversion(
-                        endpoint = "https://api.video-download-api.com/api/download.php",
-                        videoId = videoId,
-                        totalEstimatedBytes = totalBytes,
-                        onProgress = onProgress
-                    )
-                }
-
-                // Tier 3: Invidious Open Audio Streams
-                if (streamCandidate.isNullOrBlank() && videoId != null) {
-                    onProgress(20, 0, totalBytes, "Đang kết nối cổng Invidious audio (Tầng 3)...")
-                    streamCandidate = tryInvidiousStream(videoId, onProgress)
-                }
-
-                // Tier 4: Piped Open Audio Streams
-                if (streamCandidate.isNullOrBlank() && videoId != null) {
-                    onProgress(25, 0, totalBytes, "Đang kết nối cổng Piped audio (Tầng 4)...")
-                    streamCandidate = tryPipedStream(videoId, onProgress)
-                }
+                streamCandidate = best.url
             }
 
-            // 2. Direct web link fallback for direct media files
             if (streamCandidate.isNullOrBlank()) {
                 streamCandidate = if (metadata.originalUrl.startsWith("http") &&
                     !metadata.originalUrl.contains("youtube.com") &&
@@ -340,20 +252,15 @@ class AudioLinkExtractor(private val context: Context) {
                 } else null
             }
 
-            var downloadedRealMedia = false
-            val finalCandidate = streamCandidate
-
-            if (!finalCandidate.isNullOrBlank()) {
-                try {
-                    downloadedRealMedia = downloadStreamWithProgress(finalCandidate, targetFile, onProgress)
-                } catch (e: Exception) {
-                    Log.w("AudioLinkExtractor", "Real stream download failed: ${e.message}")
-                    downloadedRealMedia = false
-                }
+            if (streamCandidate.isNullOrBlank()) {
+                targetFile.delete()
+                return@withContext Result.failure(java.io.IOException("Không có liên kết âm thanh khả dụng"))
             }
 
-            // Verification: Ensure authentic audio was written without fake sample generation
-            if (!downloadedRealMedia || !targetFile.exists() || targetFile.length() < 5000) {
+            val isYouTubeStream = (metadata.source == SourceType.YOUTUBE)
+            val downloadedSuccess = downloadStreamWithProgress(streamCandidate, targetFile, onProgress, isYouTube = isYouTubeStream)
+
+            if (!downloadedSuccess || !targetFile.exists() || targetFile.length() < 5000) {
                 targetFile.delete()
                 return@withContext Result.failure(
                     java.io.IOException(
@@ -399,9 +306,8 @@ class AudioLinkExtractor(private val context: Context) {
             } catch (ignored: Exception) {}
 
             val realBitrate = detectedBitrate ?: "Không rõ"
-
-            downloadedBytes = finalFile.length()
-            totalBytes = downloadedBytes
+            val downloadedBytes = finalFile.length()
+            val totalBytes = downloadedBytes
 
             // Cache thumbnail locally so it is 100% available offline
             var localThumbPath = metadata.thumbnailUrl
@@ -451,254 +357,117 @@ class AudioLinkExtractor(private val context: Context) {
 
             Result.success(song)
         } catch (e: Exception) {
+            targetFile.delete()
             Log.e("AudioLinkExtractor", "Download failed", e)
             Result.failure(e)
         }
     }
 
-    private suspend fun pollLoaderProgress(
-        pollUrl: String,
-        totalEstimatedBytes: Long,
-        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
-    ): String? = withContext(Dispatchers.IO) {
-        var resolvedUrl: String? = null
-        for (pollAttempt in 1..28) {
-            if (pollAttempt > 1) delay(1500)
-            try {
-                val pollReq = Request.Builder()
-                    .url(pollUrl)
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                    .build()
-                httpClient.newCall(pollReq).execute().use { pResp ->
-                    if (pResp.isSuccessful) {
-                        val pBody = pResp.body?.string()
-                        if (!pBody.isNullOrBlank()) {
-                            val pJson = JSONObject(pBody)
-                            val rawProgress = pJson.optInt("progress", 0)
-                            val percent = if (rawProgress in 1..1000) (rawProgress / 10).coerceIn(10, 95) else (10 + pollAttempt * 3).coerceIn(10, 95)
-                            val statusText = pJson.optString("text", "Đang xử lý âm thanh YouTube")
-                            onProgress(percent, 0, totalEstimatedBytes, "$statusText (${percent}%)...")
-
-                            val dUrl = pJson.optString("download_url", "")
-                            if (dUrl.isNotBlank() && (dUrl.startsWith("http://") || dUrl.startsWith("https://"))) {
-                                resolvedUrl = dUrl
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AudioLinkExtractor", "Poll loader.to attempt $pollAttempt error: ${e.message}")
-            }
-            if (!resolvedUrl.isNullOrBlank()) break
-        }
-        resolvedUrl
-    }
-
-    private suspend fun tryLoaderConversion(
-        endpoint: String,
-        videoId: String,
-        totalEstimatedBytes: Long,
-        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
-    ): String? = withContext(Dispatchers.IO) {
-        try {
-            val req = Request.Builder()
-                .url("$endpoint?format=mp3&url=https://www.youtube.com/watch?v=$videoId")
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string()
-                    if (!body.isNullOrBlank()) {
-                        val json = JSONObject(body)
-                        val immediate = json.optString("download_url", "")
-                        if (immediate.isNotBlank() && (immediate.startsWith("http://") || immediate.startsWith("https://"))) {
-                            return@withContext immediate
-                        }
-                        val progressUrl = json.optString("progress_url", "")
-                        val streamId = json.optString("id", "")
-                        val targetPoll = if (progressUrl.isNotBlank()) progressUrl else "https://loader.to/ajax/progress.php?id=$streamId"
-                        return@withContext pollLoaderProgress(targetPoll, totalEstimatedBytes, onProgress)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("AudioLinkExtractor", "Loader attempt on $endpoint failed: ${e.message}")
-        }
-        null
-    }
-
-    private suspend fun tryInvidiousStream(
-        videoId: String,
-        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
-    ): String? = withContext(Dispatchers.IO) {
-        val instances = listOf(
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://yewtu.be",
-            "https://invidious.tiekoetter.com"
-        )
-        for (instance in instances) {
-            try {
-                onProgress(20, 0, 5000000L, "Đang kết nối cổng âm thanh dự phòng...")
-                val req = Request.Builder()
-                    .url("$instance/api/v1/videos/$videoId")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                    .build()
-                httpClient.newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val body = resp.body?.string()
-                        if (!body.isNullOrBlank()) {
-                            val json = JSONObject(body)
-                            val adaptiveFormats = json.optJSONArray("adaptiveFormats")
-                            if (adaptiveFormats != null) {
-                                for (i in 0 until adaptiveFormats.length()) {
-                                    val fmt = adaptiveFormats.optJSONObject(i) ?: continue
-                                    val type = fmt.optString("type", "")
-                                    val url = fmt.optString("url", "")
-                                    if (type.contains("audio") && url.isNotBlank()) {
-                                        return@withContext if (url.startsWith("/")) "$instance$url" else url
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AudioLinkExtractor", "Invidious instance $instance failed: ${e.message}")
-            }
-        }
-        null
-    }
-
-    private suspend fun tryPipedStream(
-        videoId: String,
-        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
-    ): String? = withContext(Dispatchers.IO) {
-        val pipedHosts = listOf("https://pipedapi.kavin.rocks", "https://api.piped.privacydev.net")
-        for (host in pipedHosts) {
-            try {
-                onProgress(25, 0, 5000000L, "Đang kết nối luồng Piped audio...")
-                val req = Request.Builder()
-                    .url("$host/streams/$videoId")
-                    .header("User-Agent", "Mozilla/5.0")
-                    .build()
-                httpClient.newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val body = resp.body?.string()
-                        if (!body.isNullOrBlank()) {
-                            val json = JSONObject(body)
-                            val audioStreams = json.optJSONArray("audioStreams")
-                            if (audioStreams != null && audioStreams.length() > 0) {
-                                var bestUrl: String? = null
-                                var maxBitrate = 0
-                                for (i in 0 until audioStreams.length()) {
-                                    val stream = audioStreams.optJSONObject(i) ?: continue
-                                    val sUrl = stream.optString("url", "")
-                                    val bitrate = stream.optInt("bitrate", 0)
-                                    if (sUrl.isNotBlank() && bitrate >= maxBitrate) {
-                                        maxBitrate = bitrate
-                                        bestUrl = sUrl
-                                    }
-                                }
-                                if (bestUrl != null) return@withContext bestUrl
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AudioLinkExtractor", "Piped host $host failed: ${e.message}")
-            }
-        }
-        null
-    }
-
     private fun downloadStreamWithProgress(
         streamUrl: String,
         targetFile: File,
-        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long, speed: String) -> Unit,
+        isYouTube: Boolean = false
     ): Boolean {
-        val request = Request.Builder()
-            .url(streamUrl)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-            .build()
+        return try {
+            val chunkSize = 8 * 1024 * 1024L
+            var downloaded = 0L
+            var totalBytes = -1L
+            var lastTime = System.currentTimeMillis()
+            var bytesSinceLast = 0L
 
-        try {
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    targetFile.delete()
-                    return false
-                }
-                val body = response.body ?: run {
-                    targetFile.delete()
-                    return false
-                }
+            while (totalBytes == -1L || downloaded < totalBytes) {
+                val reqBuilder = Request.Builder()
+                    .url(streamUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-                val contentType = response.header("Content-Type")?.lowercase()
-                if (contentType != null && (contentType.startsWith("text/") || contentType.contains("html") || contentType.contains("json"))) {
-                    targetFile.delete()
-                    return false
+                if (isYouTube && (totalBytes == -1L || totalBytes > chunkSize)) {
+                    val endByte = if (totalBytes > 0) minOf(downloaded + chunkSize - 1, totalBytes - 1) else (downloaded + chunkSize - 1)
+                    reqBuilder.header("Range", "bytes=$downloaded-$endByte")
                 }
 
-                val contentLength = body.contentLength()
-                val totalBytes = if (contentLength > 0) contentLength else (5 * 1024 * 1024L)
+                httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        targetFile.delete()
+                        return false
+                    }
+                    val body = resp.body ?: run {
+                        targetFile.delete()
+                        return false
+                    }
 
-                val inputStream = body.byteStream()
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                var downloadedBytes = 0L
-                var lastTime = System.currentTimeMillis()
-                var bytesSinceLast = 0L
-                var checkedFirstBytes = false
-                var isContentInvalid = false
+                    val contentType = resp.header("Content-Type")?.lowercase()
+                    if (contentType != null && (contentType.startsWith("text/") || contentType.contains("html") || contentType.contains("json"))) {
+                        targetFile.delete()
+                        return false
+                    }
 
-                FileOutputStream(targetFile).use { outputStream ->
-                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                        if (!checkedFirstBytes) {
-                            for (i in 0 until bytesRead) {
-                                val ch = buffer[i].toInt().toChar()
-                                if (!ch.isWhitespace()) {
-                                    checkedFirstBytes = true
-                                    if (ch == '<' || ch == '{') {
-                                        isContentInvalid = true
-                                    }
-                                    break
+                    val code = resp.code
+                    if (code == 200) {
+                        val len = body.contentLength()
+                        totalBytes = if (len > 0) len else (5 * 1024 * 1024L)
+
+                        FileOutputStream(targetFile).use { output ->
+                            val buffer = ByteArray(8192)
+                            var bytesRead: Int
+                            val stream = body.byteStream()
+                            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                                output.write(buffer, 0, bytesRead)
+                                downloaded += bytesRead
+                                bytesSinceLast += bytesRead
+                                val now = System.currentTimeMillis()
+                                if (now - lastTime >= 250) {
+                                    val speedKbps = (bytesSinceLast * 1000.0) / (now - lastTime) / 1024.0
+                                    val speedText = if (speedKbps > 1024) "%.1f MB/s".format(speedKbps / 1024) else "%.0f KB/s".format(speedKbps)
+                                    val percent = ((downloaded * 100) / totalBytes).toInt().coerceIn(1, 99)
+                                    onProgress(percent, downloaded, totalBytes, speedText)
+                                    lastTime = now
+                                    bytesSinceLast = 0L
                                 }
                             }
-                            if (isContentInvalid) {
-                                return@use
+                            output.flush()
+                        }
+                        return targetFile.exists() && targetFile.length() > 5000
+                    } else if (code == 206) {
+                        if (totalBytes == -1L) {
+                            val contentRange = resp.header("Content-Range")
+                            val parsedTotal = contentRange?.substringAfterLast("/")?.trim()?.toLongOrNull()
+                            totalBytes = parsedTotal ?: body.contentLength().takeIf { it > 0 } ?: (10 * 1024 * 1024L)
+                        }
+
+                        FileOutputStream(targetFile, true).use { output ->
+                            val buffer = ByteArray(8192)
+                            var bytesRead: Int
+                            val stream = body.byteStream()
+                            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                                output.write(buffer, 0, bytesRead)
+                                downloaded += bytesRead
+                                bytesSinceLast += bytesRead
+                                val now = System.currentTimeMillis()
+                                if (now - lastTime >= 250) {
+                                    val speedKbps = (bytesSinceLast * 1000.0) / (now - lastTime) / 1024.0
+                                    val speedText = if (speedKbps > 1024) "%.1f MB/s".format(speedKbps / 1024) else "%.0f KB/s".format(speedKbps)
+                                    val percent = ((downloaded * 100) / totalBytes).toInt().coerceIn(1, 99)
+                                    onProgress(percent, downloaded, totalBytes, speedText)
+                                    lastTime = now
+                                    bytesSinceLast = 0L
+                                }
                             }
+                            output.flush()
                         }
-                        outputStream.write(buffer, 0, bytesRead)
-                        downloadedBytes += bytesRead
-                        bytesSinceLast += bytesRead
-
-                        val now = System.currentTimeMillis()
-                        if (now - lastTime >= 250) {
-                            val speedKbps = (bytesSinceLast * 1000.0) / (now - lastTime) / 1024.0
-                            val speedText = if (speedKbps > 1024) "%.1f MB/s".format(speedKbps / 1024) else "%.0f KB/s".format(speedKbps)
-                            val percent = ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(1, 99)
-                            onProgress(percent, downloadedBytes, totalBytes, speedText)
-                            lastTime = now
-                            bytesSinceLast = 0L
-                        }
+                    } else {
+                        targetFile.delete()
+                        return false
                     }
-                    outputStream.flush()
-                }
-
-                if (isContentInvalid) {
-                    targetFile.delete()
-                    return false
                 }
             }
+
+            val ok = targetFile.exists() && targetFile.length() > 5000
+            if (!ok) targetFile.delete()
+            ok
         } catch (e: Exception) {
             targetFile.delete()
-            return false
+            false
         }
-
-        val isValid = targetFile.exists() && targetFile.length() > 5000
-        if (!isValid) {
-            targetFile.delete()
-        }
-        return isValid
     }
 }
