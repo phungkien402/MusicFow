@@ -63,6 +63,10 @@ class AudioPlayerManager(private val context: Context) {
     private var isManuallyPaused = false
     private var isPausedDueToTransientLoss = false
     private var pendingSeekPosition: Long? = null
+    // Moi lan playSong tang ma nay; coroutine chuan bi chi chay neu van la yeu cau moi nhat.
+    private var playRequestId = 0L
+    // Dang chuyen bai: bo qua tin hieu 'het phat' do stop() bai cu gay ra.
+    private var switchingTrack = false
 
     val exoPlayer: ExoPlayer? by lazy {
         try {
@@ -110,6 +114,7 @@ class AudioPlayerManager(private val context: Context) {
         }
 
         override fun onIsPlayingChanged(playing: Boolean) {
+            if (!playing && switchingTrack) return
             _isPlaying.value = playing
             if (playing) {
                 startProgressTracker()
@@ -245,6 +250,7 @@ class AudioPlayerManager(private val context: Context) {
     fun stopPlaybackCompletely() {
         isManuallyPaused = true
         isPausedDueToTransientLoss = false
+        switchingTrack = false
         _isPlaying.value = false
         progressJob?.cancel()
         playJob?.cancel()
@@ -504,8 +510,11 @@ class AudioPlayerManager(private val context: Context) {
         isPausedDueToTransientLoss = false
         _playbackError.value = null
 
+        val requestId = ++playRequestId
         playJob?.cancel()
+        switchingTrack = true
         releasePlayer()
+        _isPlaying.value = true
 
         playJob = scope.launch {
             try {
@@ -523,9 +532,16 @@ class AudioPlayerManager(private val context: Context) {
                     }
                 }
 
-                if (!isActive || !_isPlaying.value || isManuallyPaused) return@launch
+                if (!isActive || requestId != playRequestId || isManuallyPaused) {
+                    if (requestId == playRequestId) switchingTrack = false
+                    return@launch
+                }
 
-                if (validPath == null && (song.sourceUrl.isNullOrBlank() || !song.sourceUrl.startsWith("http"))) {
+                // Chi phat thang tu sourceUrl khi do la link file nhac truc tiep; link trang YouTube/TikTok khong phat duoc.
+                val canStreamSource = song.sourceType == com.example.data.model.SourceType.DIRECT_URL &&
+                    !song.sourceUrl.isNullOrBlank() && song.sourceUrl.startsWith("http")
+                if (validPath == null && !canStreamSource) {
+                    switchingTrack = false
                     releasePlayer()
                     _isPlaying.value = false
                     _playbackError.value = "Không tìm thấy file bài hát: ${song.title}. Hãy tải lại."
@@ -554,6 +570,7 @@ class AudioPlayerManager(private val context: Context) {
                     player.prepare()
                     applyPlaybackSpeed(_playbackSpeed.value)
                     startWithCrossfade(player)
+                    switchingTrack = false
                     _isPlaying.value = true
                     startProgressTracker()
                 }
@@ -563,6 +580,7 @@ class AudioPlayerManager(private val context: Context) {
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     Log.e("AudioPlayerManager", "Failed to play song: ${song.title}", e)
+                    if (requestId == playRequestId) switchingTrack = false
                     _isPlaying.value = false
                 }
             }
@@ -588,6 +606,7 @@ class AudioPlayerManager(private val context: Context) {
     fun pause() {
         isManuallyPaused = true
         isPausedDueToTransientLoss = false
+        switchingTrack = false
         progressJob?.cancel()
         playJob?.cancel()
         playJob = null
@@ -1093,7 +1112,7 @@ class AudioPlayerManager(private val context: Context) {
     }
 
     private fun startWithCrossfade(player: ExoPlayer) {
-        if (!_isPlaying.value || isManuallyPaused) {
+        if (isManuallyPaused) {
             return
         }
         val crossfade = _crossfadeSeconds.value
