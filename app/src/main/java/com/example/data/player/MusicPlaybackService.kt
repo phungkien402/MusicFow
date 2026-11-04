@@ -61,9 +61,14 @@ class MusicPlaybackService : MediaSessionService() {
                 }
             })
             .build()
+        // Dang ky phien voi service: Media3 chi tu dang thong bao media (va Now Bar/man hinh khoa doc tu thong bao do)
+        // cho cac phien da duoc add, ma giao dien app khong ket noi MediaController nen phai add tay.
+        mediaSession?.let { addSession(it) }
     }
 
     fun updatePlayer(exo: Player) {
+        val session = mediaSession
+        if (session != null && !isSessionAdded(session)) addSession(session)
         if (mediaSession == null) {
             setupMediaSession(exo)
         } else {
@@ -112,7 +117,18 @@ class MusicPlaybackService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        if (mediaSession == null) {
+            (activePlayerManager ?: AudioPlayerManager.activeInstance)?.exoPlayer?.let { setupMediaSession(it) }
+        }
         return mediaSession
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Service co the duoc tao truoc khi player san sang: tao phien muon o day.
+        if (mediaSession == null) {
+            (activePlayerManager ?: AudioPlayerManager.activeInstance)?.exoPlayer?.let { setupMediaSession(it) }
+        }
+        return super.onStartCommand(intent, flags, startId)
     }
 
     override fun onDestroy() {
@@ -128,8 +144,18 @@ class MusicPlaybackService : MediaSessionService() {
         var instance: MusicPlaybackService? = null
         var activePlayerManager: AudioPlayerManager? = null
 
+        private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
         fun updateActivePlayer(player: Player) {
-            instance?.updatePlayer(player)
+            // Hoan sang luot sau cua main thread: lenh Next/Prev tu man hinh khoa/tai nghe di vao QUA chinh MediaSession,
+            // goi session.setPlayer() long ben trong lenh do bi Media3 tu choi -> phien bam player cu (trang thai NONE).
+            mainHandler.post {
+                try {
+                    instance?.updatePlayer(player)
+                } catch (e: Exception) {
+                    android.util.Log.e("MusicPlaybackService", "Khong doi duoc player cho MediaSession", e)
+                }
+            }
         }
 
         fun start(context: Context) {
