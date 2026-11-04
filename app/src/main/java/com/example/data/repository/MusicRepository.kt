@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
 import com.example.data.downloader.SampleAudioGenerator
+import com.example.data.downloader.SourceKey
 import com.example.data.local.MusicDao
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistSongCrossRef
@@ -224,7 +225,7 @@ class MusicRepository(
     }
 
     suspend fun saveDownloadedSong(song: Song, targetPlaylistId: Long?): Long = withContext(Dispatchers.IO) {
-        val songId = dao.insertSong(SongEntity.fromSong(song))
+        val songId = dao.insertSong(SongEntity.fromSong(song.copy(id = 0)))
         if (targetPlaylistId != null && targetPlaylistId > 0) {
             dao.addSongToPlaylist(PlaylistSongCrossRef(targetPlaylistId, songId))
         }
@@ -243,29 +244,60 @@ class MusicRepository(
         dao.updateSongTitleAndArtist(songId, title.trim(), artist.trim())
     }
 
+    private fun isInsideAppStorage(file: File): Boolean {
+        val allowedDirs = listOfNotNull(
+            context.getExternalFilesDir(null),
+            context.filesDir,
+            context.cacheDir,
+            context.externalCacheDir
+        ).map {
+            try { it.canonicalPath } catch (e: Exception) { it.absolutePath }
+        }
+
+        val canonicalPath = try {
+            file.canonicalPath
+        } catch (e: Exception) {
+            file.absolutePath
+        }
+
+        return allowedDirs.any { appPath ->
+            canonicalPath.equals(appPath, ignoreCase = true) ||
+            canonicalPath.startsWith(appPath + File.separator, ignoreCase = true)
+        }
+    }
+
+    suspend fun findExistingDownload(url: String): Song? = withContext(Dispatchers.IO) {
+        val key = SourceKey.of(url)
+        if (key.isBlank()) return@withContext null
+        dao.getAllSongsList().find { songEntity ->
+            val songUrl = songEntity.sourceUrl
+            !songUrl.isNullOrBlank() && SourceKey.of(songUrl) == key
+        }?.toSong()
+    }
+
     suspend fun deleteSong(song: Song) = withContext(Dispatchers.IO) {
         dao.deleteCrossRefsForSong(song.id)
         dao.deleteSong(song.id)
         if (song.filePath.isNotBlank()) {
             val file = File(song.filePath)
-            if (file.exists() && file.isFile) {
+            if (isInsideAppStorage(file) && file.exists() && file.isFile) {
                 file.delete()
             }
             val baseName = file.name
             if (baseName.isNotBlank()) {
                 val offlineFile = File(context.getExternalFilesDir(null) ?: context.filesDir, "offline_tracks/$baseName")
-                if (offlineFile.exists() && offlineFile.isFile) {
+                if (isInsideAppStorage(offlineFile) && offlineFile.exists() && offlineFile.isFile) {
                     offlineFile.delete()
                 }
                 val downloadFile = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads/$baseName")
-                if (downloadFile.exists() && downloadFile.isFile) {
+                if (isInsideAppStorage(downloadFile) && downloadFile.exists() && downloadFile.isFile) {
                     downloadFile.delete()
                 }
             }
         }
-        if (!song.thumbnailUrl.isNullOrBlank() && song.thumbnailUrl.startsWith("/")) {
+        if (!song.thumbnailUrl.isNullOrBlank()) {
             val thumbFile = File(song.thumbnailUrl)
-            if (thumbFile.exists() && thumbFile.isFile) {
+            if (isInsideAppStorage(thumbFile) && thumbFile.exists() && thumbFile.isFile) {
                 thumbFile.delete()
             }
         }

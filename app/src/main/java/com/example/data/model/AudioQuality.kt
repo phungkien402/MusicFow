@@ -10,6 +10,16 @@ data class AudioQuality(
     val estimatedSizeFactor: Double // relative size estimation
 ) {
     companion object {
+        val AUTO = AudioQuality(
+            id = "auto",
+            format = AudioFormat.MP3,
+            bitrate = "Theo nguồn",
+            label = "Định dạng gốc từ nguồn",
+            description = "Tự động trích xuất định dạng âm thanh gốc chất lượng cao nhất từ nguồn phát",
+            badge = "AUTO",
+            estimatedSizeFactor = 1.0
+        )
+
         val MP3_320 = AudioQuality(
             id = "mp3_320",
             format = AudioFormat.MP3,
@@ -60,53 +70,30 @@ data class AudioQuality(
             estimatedSizeFactor = 2.5
         )
 
-        val QUALITIES = listOf(MP3_320, M4A_256, WAV_HIRES, MP3_128, FLAC_LOSSLESS)
+        val QUALITIES = listOf(AUTO, MP3_320, M4A_256, WAV_HIRES, MP3_128, FLAC_LOSSLESS)
 
-        val DEFAULT = MP3_320
+        val DEFAULT = AUTO
 
-        /**
-         * Returns ONLY the formats that can actually be extracted / downloaded
-         * based on the source platform and URL.
-         * YouTube and TikTok do not provide raw 24-bit FLAC streams,
-         * so FLAC is excluded for them to avoid fallback to default sound.
-         */
+        fun byId(id: String): AudioQuality {
+            return QUALITIES.find { it.id.equals(id, ignoreCase = true) } ?: AUTO
+        }
+
         fun getAvailableQualities(source: SourceType, url: String): List<AudioQuality> {
             return when (source) {
-                SourceType.YOUTUBE -> listOf(
-                    MP3_320,
-                    M4A_256,
-                    WAV_HIRES,
-                    MP3_128
-                )
-                SourceType.TIKTOK -> listOf(
-                    MP3_320,
-                    M4A_256,
-                    WAV_HIRES,
-                    MP3_128
-                )
                 SourceType.DIRECT_URL -> {
                     val path = url.substringBefore('?').substringBefore('#')
                     val lastSegment = path.substringAfterLast('/')
                     val ext = if (lastSegment.contains('.')) lastSegment.substringAfterLast('.').lowercase() else ""
                     when (ext) {
-                        "flac" -> listOf(FLAC_LOSSLESS, WAV_HIRES, MP3_320)
-                        "wav" -> listOf(WAV_HIRES, MP3_320)
-                        "m4a", "aac" -> listOf(M4A_256, MP3_320)
-                        "mp3" -> listOf(MP3_320, MP3_128)
-                        else -> listOf(
-                            MP3_320,
-                            M4A_256,
-                            WAV_HIRES,
-                            MP3_128
-                        )
+                        "flac" -> listOf(FLAC_LOSSLESS)
+                        "wav" -> listOf(WAV_HIRES)
+                        "m4a", "aac" -> listOf(M4A_256)
+                        "mp3" -> listOf(MP3_320)
+                        else -> listOf(AUTO)
                     }
                 }
-                else -> listOf(
-                    MP3_320,
-                    M4A_256,
-                    WAV_HIRES,
-                    MP3_128
-                )
+                SourceType.YOUTUBE, SourceType.TIKTOK -> listOf(AUTO)
+                else -> listOf(AUTO)
             }
         }
     }

@@ -6,7 +6,8 @@ enum class AudioFormat(val displayName: String, val extension: String, val isLos
     FLAC("FLAC", "flac", true),
     WAV("WAV", "wav", true),
     AAC("AAC", "aac", false),
-    OGG("OGG", "ogg", false);
+    OGG("OGG", "ogg", false),
+    WEBM("WebM", "webm", false);
 
     companion object {
         fun fromExtension(ext: String): AudioFormat {

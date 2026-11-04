@@ -53,7 +53,9 @@ fun QualitySelectionDialog(
     }
 
     LaunchedEffect(availableQualities) {
-        if (availableQualities.none { it.id == selectedQuality.id }) {
+        if (availableQualities.size == 1) {
+            onQualitySelected(availableQualities[0])
+        } else if (availableQualities.none { it.id == selectedQuality.id }) {
             availableQualities.firstOrNull()?.let { onQualitySelected(it) }
         }
     }
@@ -194,7 +196,53 @@ fun QualitySelectionDialog(
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    availableQualities.forEach { quality ->
+                    if (availableQualities.size == 1) {
+                        val quality = availableQualities[0]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(NeonCyan.copy(alpha = 0.12f))
+                                .border(1.dp, NeonCyan, RoundedCornerShape(12.dp))
+                                .padding(14.dp)
+                                .testTag("quality_item_${quality.id}"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = quality.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeonCyan
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (quality.format.isLossless) NeonPink.copy(alpha = 0.2f) else NeonPurple.copy(alpha = 0.2f)
+                                    ) {
+                                        Text(
+                                            text = quality.badge,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (quality.format.isLossless) NeonPink else NeonPurple
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = quality.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    } else {
+                        availableQualities.forEach { quality ->
                         val isSelected = quality.id == selectedQuality.id
                         val borderColor = if (isSelected) NeonCyan else DarkCardBorder
                         val bgColor = if (isSelected) NeonCyan.copy(alpha = 0.12f) else DarkSurfaceVariant
@@ -254,6 +302,7 @@ fun QualitySelectionDialog(
                                 )
                             }
                         }
+                    }
                     }
                 }
 

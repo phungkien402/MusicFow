@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -33,10 +34,10 @@ interface MusicDao {
     @Query("SELECT COUNT(*) FROM songs")
     suspend fun getSongCount(): Int
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertSong(song: SongEntity): Long
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertSongs(songs: List<SongEntity>)
 
     @Update
@@ -67,7 +68,7 @@ interface MusicDao {
     @Query("SELECT * FROM playlist_songs")
     suspend fun getAllPlaylistSongsCrossRefList(): List<PlaylistSongCrossRef>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertPlaylists(playlists: List<PlaylistEntity>)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -91,7 +92,7 @@ interface MusicDao {
     @Query("SELECT * FROM playlists WHERE LOWER(TRIM(name)) = LOWER(TRIM(:name)) LIMIT 1")
     suspend fun findPlaylistByName(name: String): PlaylistEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertPlaylist(playlist: PlaylistEntity): Long
 
     @Query("DELETE FROM playlists WHERE id = :playlistId")

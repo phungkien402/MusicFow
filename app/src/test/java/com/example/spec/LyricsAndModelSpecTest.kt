@@ -128,11 +128,9 @@ class LyricsAndModelSpecTest {
     }
 
     @Test
-    fun `TC-MOD-02 YouTube, TikTok khong cho chon FLAC, co mac dinh 320`() {
+    fun `TC-MOD-02 (doi o dot C) YouTube, TikTok chi co AUTO - khong hua FLAC hay kbps`() {
         for (src in listOf(SourceType.YOUTUBE, SourceType.TIKTOK)) {
-            val q = AudioQuality.getAvailableQualities(src, "https://youtu.be/abcdefghijk")
-            assertFalse(q.any { it.format == AudioFormat.FLAC })
-            assertTrue(q.contains(AudioQuality.DEFAULT))
+            assertEquals(listOf(AudioQuality.AUTO), AudioQuality.getAvailableQualities(src, "https://youtu.be/abcdefghijk"))
         }
     }
 
@@ -143,9 +141,9 @@ class LyricsAndModelSpecTest {
     }
 
     @Test
-    fun `TC-MOD-04 link mp3 nhung ten mien chua chu flac - chi duoc chon MP3`() {
+    fun `TC-MOD-04 (doi o dot C) link mp3 nhung ten mien chua chu flac - chi 1 lua chon MP3`() {
         val q = AudioQuality.getAvailableQualities(SourceType.DIRECT_URL, "https://cdn.flac-music.vn/songs/bai.mp3")
-        assertEquals(listOf(AudioQuality.MP3_320, AudioQuality.MP3_128), q)
+        assertEquals(listOf(AudioFormat.MP3), q.map { it.format })
     }
 
     @Test

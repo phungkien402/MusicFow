@@ -144,6 +144,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _showQualityDialog = MutableStateFlow(false)
     val showQualityDialog: StateFlow<Boolean> = _showQualityDialog.asStateFlow()
 
+    private var _pendingDuplicateMetadata: ParsedLinkMetadata? = null
+    private val _duplicateSong = MutableStateFlow<Song?>(null)
+    val duplicateSong: StateFlow<Song?> = _duplicateSong.asStateFlow()
+
     private val _songToAddToPlaylist = MutableStateFlow<Song?>(null)
     val songToAddToPlaylist: StateFlow<Song?> = _songToAddToPlaylist.asStateFlow()
 
@@ -228,6 +232,21 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _analyzedMetadata.value = null
     }
 
+    fun dismissDuplicateDialog() {
+        _duplicateSong.value = null
+        _pendingDuplicateMetadata = null
+    }
+
+    fun continueDownloadAfterDuplicate() {
+        val meta = _pendingDuplicateMetadata
+        _duplicateSong.value = null
+        _pendingDuplicateMetadata = null
+        if (meta != null) {
+            _analyzedMetadata.value = meta
+            _showQualityDialog.value = true
+        }
+    }
+
     fun clearMessages() {
         _errorMessage.value = null
         _successMessage.value = null
@@ -245,14 +264,33 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _isAnalyzing.value = true
             _errorMessage.value = null
 
+            val existing = repository.findExistingDownload(url)
             val result = linkExtractor.analyzeUrl(url)
             _isAnalyzing.value = false
 
             result.onSuccess { metadata ->
-                _analyzedMetadata.value = metadata
-                _showQualityDialog.value = true
+                if (existing != null) {
+                    _pendingDuplicateMetadata = metadata
+                    _duplicateSong.value = existing
+                } else {
+                    _analyzedMetadata.value = metadata
+                    _showQualityDialog.value = true
+                }
             }.onFailure { e ->
-                _errorMessage.value = "Không thể phân tích liên kết: ${e.localizedMessage ?: "Vui lòng kiểm tra lại URL"}"
+                if (existing != null) {
+                    _pendingDuplicateMetadata = ParsedLinkMetadata(
+                        originalUrl = url,
+                        source = SourceType.DIRECT_URL,
+                        title = existing.title,
+                        artist = existing.artist,
+                        thumbnailUrl = existing.thumbnailUrl,
+                        estimatedDurationMs = existing.durationMs,
+                        directStreamUrl = url
+                    )
+                    _duplicateSong.value = existing
+                } else {
+                    _errorMessage.value = "Không thể phân tích liên kết: ${e.localizedMessage ?: "Vui lòng kiểm tra lại URL"}"
+                }
             }
         }
     }

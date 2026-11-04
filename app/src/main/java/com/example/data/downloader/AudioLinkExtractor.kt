@@ -16,6 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
@@ -361,17 +362,45 @@ class AudioLinkExtractor(private val context: Context) {
                 )
             }
 
+            // Format detection from first 16 bytes
+            val header = ByteArray(16)
+            val bytesRead = try {
+                FileInputStream(targetFile).use { it.read(header) }
+            } catch (e: Exception) { 0 }
+            val detectedFormat = if (bytesRead > 0) {
+                AudioFormatDetector.detect(header.copyOf(bytesRead))
+            } else null
+
+            val realFormat = detectedFormat ?: if (quality == AudioQuality.AUTO) AudioFormat.MP3 else quality.format
+
+            val finalFile = if (!targetFile.name.endsWith(".${realFormat.extension}", ignoreCase = true)) {
+                val newFileName = targetFile.nameWithoutExtension + ".${realFormat.extension}"
+                val renamed = File(targetFile.parentFile, newFileName)
+                if (targetFile.renameTo(renamed)) renamed else targetFile
+            } else {
+                targetFile
+            }
+
             var actualDuration = metadata.estimatedDurationMs
+            var detectedBitrate: String? = null
             try {
                 val retriever = android.media.MediaMetadataRetriever()
-                retriever.setDataSource(targetFile.absolutePath)
+                retriever.setDataSource(finalFile.absolutePath)
                 retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.let {
                     if (it > 0) actualDuration = it
+                }
+                retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.let { bps ->
+                    if (bps > 0) {
+                        val kbps = (bps + 500) / 1000
+                        detectedBitrate = "$kbps kbps"
+                    }
                 }
                 retriever.release()
             } catch (ignored: Exception) {}
 
-            downloadedBytes = targetFile.length()
+            val realBitrate = detectedBitrate ?: "Không rõ"
+
+            downloadedBytes = finalFile.length()
             totalBytes = downloadedBytes
 
             // Cache thumbnail locally so it is 100% available offline
@@ -408,11 +437,11 @@ class AudioLinkExtractor(private val context: Context) {
                     else -> "SoundFlow Downloads"
                 },
                 durationMs = actualDuration,
-                filePath = targetFile.absolutePath,
+                filePath = finalFile.absolutePath,
                 sourceUrl = metadata.originalUrl,
-                format = quality.format,
-                bitrate = quality.bitrate,
-                fileSizeBytes = targetFile.length().coerceAtLeast(totalBytes),
+                format = realFormat,
+                bitrate = realBitrate,
+                fileSizeBytes = finalFile.length(),
                 isDownloaded = true,
                 isFavorite = false,
                 sourceType = metadata.source,

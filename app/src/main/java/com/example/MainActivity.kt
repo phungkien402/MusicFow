@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -97,6 +98,7 @@ fun SoundFlowApp(
 
     val showNowPlayingSheet by viewModel.showNowPlayingSheet.collectAsStateWithLifecycle()
     val showQualityDialog by viewModel.showQualityDialog.collectAsStateWithLifecycle()
+    val duplicateSong by viewModel.duplicateSong.collectAsStateWithLifecycle()
     val showCreatePlaylistDialog by viewModel.showCreatePlaylistDialog.collectAsStateWithLifecycle()
     val songToAddToPlaylist by viewModel.songToAddToPlaylist.collectAsStateWithLifecycle()
     val selectedPlaylistForDetail by viewModel.selectedPlaylistForDetail.collectAsStateWithLifecycle()
@@ -414,6 +416,45 @@ fun SoundFlowApp(
                     onDismiss = { viewModel.dismissQualityDialog() }
                 )
             }
+        }
+
+        // Duplicate Song Dialog
+        duplicateSong?.let { song ->
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissDuplicateDialog() },
+                title = { Text("Bài này đã có trong thư viện", color = TextPrimary) },
+                text = { Text("Bài này đã có trong thư viện: ${song.title}", color = TextPrimary) },
+                confirmButton = {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                viewModel.dismissDuplicateDialog()
+                                viewModel.playSong(song)
+                            }
+                        ) {
+                            Text("Phát", color = NeonCyan)
+                        }
+                        TextButton(
+                            onClick = {
+                                viewModel.continueDownloadAfterDuplicate()
+                            }
+                        ) {
+                            Text("Vẫn tải lại", color = NeonCyan)
+                        }
+                        TextButton(
+                            onClick = {
+                                viewModel.dismissDuplicateDialog()
+                            }
+                        ) {
+                            Text("Đóng", color = TextSecondary)
+                        }
+                    }
+                },
+                containerColor = DarkSurface
+            )
         }
 
         // Create Playlist Dialog
