@@ -16,6 +16,7 @@ import com.example.data.model.AudioQuality
 import com.example.data.model.SourceType
 import com.example.data.repository.MusicRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 class DownloadWorker(
@@ -44,14 +45,21 @@ class DownloadWorker(
         private const val KEY_DIRECT_STREAM_URL = "direct_stream_url"
         private const val KEY_QUALITY_ID = "quality_id"
         private const val KEY_TARGET_PLAYLIST_ID = "target_playlist_id"
+        const val KEY_FORCE = "force"
 
         data class Input(
             val metadata: ParsedLinkMetadata,
             val quality: AudioQuality,
-            val targetPlaylistId: Long?
+            val targetPlaylistId: Long?,
+            val force: Boolean = false
         )
 
-        fun buildInput(metadata: ParsedLinkMetadata, quality: AudioQuality, targetPlaylistId: Long?): Data {
+        fun buildInput(
+            metadata: ParsedLinkMetadata,
+            quality: AudioQuality,
+            targetPlaylistId: Long?,
+            force: Boolean = false
+        ): Data {
             val builder = Data.Builder()
                 .putString(KEY_ORIGINAL_URL, metadata.originalUrl)
                 .putString(KEY_SOURCE, metadata.source.name)
@@ -59,6 +67,7 @@ class DownloadWorker(
                 .putString(KEY_ARTIST, metadata.artist)
                 .putLong(KEY_ESTIMATED_DURATION_MS, metadata.estimatedDurationMs)
                 .putString(KEY_QUALITY_ID, quality.id)
+                .putBoolean(KEY_FORCE, force)
 
             metadata.thumbnailUrl?.let { builder.putString(KEY_THUMBNAIL_URL, it) }
             metadata.directStreamUrl?.let { builder.putString(KEY_DIRECT_STREAM_URL, it) }
@@ -83,6 +92,7 @@ class DownloadWorker(
             val directStreamUrl = data.getString(KEY_DIRECT_STREAM_URL)
             val qualityId = data.getString(KEY_QUALITY_ID) ?: AudioQuality.DEFAULT.id
             val quality = AudioQuality.byId(qualityId)
+            val force = data.getBoolean(KEY_FORCE, false)
 
             val targetPlaylistId = if (data.keyValueMap.containsKey(KEY_TARGET_PLAYLIST_ID)) {
                 data.getLong(KEY_TARGET_PLAYLIST_ID, -1L).takeIf { it != -1L }
@@ -99,7 +109,7 @@ class DownloadWorker(
                 estimatedDurationMs = estimatedDurationMs,
                 directStreamUrl = directStreamUrl
             )
-            return Input(metadata, quality, targetPlaylistId)
+            return Input(metadata, quality, targetPlaylistId, force)
         }
     }
 
@@ -145,10 +155,12 @@ class DownloadWorker(
 
         val repo = MusicRepository(appContext, MusicDatabase.getInstance(appContext).musicDao())
 
-        // 1. Link đã tải rồi -> trả id bài cũ, không gọi mạng
-        val existingSong = repo.findExistingDownload(metadata.originalUrl)
-        if (existingSong != null) {
-            return@withContext Result.success(workDataOf(KEY_SONG_ID to existingSong.id))
+        // 1. Link đã tải rồi -> trả id bài cũ, không gọi mạng (bỏ qua nếu force)
+        if (!input.force) {
+            val existingSong = repo.findExistingDownload(metadata.originalUrl)
+            if (existingSong != null) {
+                return@withContext Result.success(workDataOf(KEY_SONG_ID to existingSong.id))
+            }
         }
 
         // 2. Chạy foreground khi đang tải (trong try/catch)
@@ -169,6 +181,12 @@ class DownloadWorker(
                 val now = System.currentTimeMillis()
                 if (percent == 100 || now - lastProgressTime >= minIntervalMs) {
                     lastProgressTime = now
+                    try {
+                        runBlocking {
+                            setForeground(createForegroundNotification(metadata.title, percent))
+                        }
+                    } catch (_: Exception) {
+                    }
                     try {
                         setProgressAsync(
                             workDataOf(

@@ -17,6 +17,7 @@ import com.example.data.model.Song
 import com.example.data.model.SourceType
 import com.example.data.player.AudioPlayerManager
 import com.example.data.player.EqualizerPreset
+import com.example.data.player.PlaybackStateStore
 import com.example.data.player.RepeatMode
 import com.example.data.player.ReverbMode
 import com.example.data.repository.MusicRepository
@@ -29,6 +30,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -145,10 +148,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val workManager by lazy { WorkManager.getInstance(getApplication()) }
+    private val playbackStateStore = PlaybackStateStore(application)
     private val hiddenTaskIds = MutableStateFlow<Set<String>>(emptySet())
     private val localTaskMap = ConcurrentHashMap<String, LocalTaskInfo>()
     private val localTaskMapByUrl = ConcurrentHashMap<String, LocalTaskInfo>()
     private val notifiedSuccessIds = Collections.synchronizedSet(mutableSetOf<String>())
+    private val sessionObservedActiveWorkIds = Collections.synchronizedSet(mutableSetOf<String>())
+    private var _forceNextDownload = false
 
     val activeDownloads: StateFlow<List<DownloadTask>> = combine(
         workManager.getWorkInfosByTagFlow(DownloadWorker.TAG),
@@ -209,9 +215,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         progressPercent = 100
                         downloadSpeedText = "Đã lưu vào bộ nhớ"
                         completedSongId = workInfo.outputData.getLong(DownloadWorker.KEY_SONG_ID, -1L).takeIf { it > 0 }
-                        if (notifiedSuccessIds.add(taskId)) {
-                            _successMessage.value = "Tải thành công: $title"
-                        }
                     }
                     WorkInfo.State.FAILED -> {
                         status = DownloadStatus.FAILED
@@ -299,9 +302,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val showAddMultipleSongsDialog: StateFlow<Boolean> = _showAddMultipleSongsDialog.asStateFlow()
 
     init {
-        // Initialize preset songs on first run
+        // Initialize preset songs on first run and restore saved playback state
         viewModelScope.launch {
             repository.initializePresetTracksIfEmpty()
+            val library = repository.allSongs.first()
+            val saved = playbackStateStore.load()
+            if (saved != null) {
+                val resolved = saved.resolve(library)
+                if (resolved != null) {
+                    val (queue, idx) = resolved
+                    playerManager.restoreQueue(queue, idx, saved.positionMs)
+                    playerManager.setShuffleEnabled(saved.shuffle)
+                    playerManager.setRepeatMode(saved.repeatMode)
+                }
+            }
         }
 
         playerManager.onSongFinishedListener = { finishedSong ->
@@ -314,6 +328,53 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             playerManager.playbackError.collect { error ->
                 if (error != null) {
                     _errorMessage.value = error
+                }
+            }
+        }
+
+        // Save playback snapshot on pause, song change, every 10s while playing
+        viewModelScope.launch {
+            playerManager.currentSong.collect {
+                savePlaybackSnapshot()
+            }
+        }
+
+        viewModelScope.launch {
+            playerManager.isPlaying.collect { playing ->
+                if (!playing) {
+                    savePlaybackSnapshot()
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            while (isActive) {
+                delay(10_000L)
+                if (playerManager.isPlaying.value) {
+                    savePlaybackSnapshot()
+                }
+            }
+        }
+
+        // Collect download work updates without leaking side-effects in map,
+        // notifying success only for works observed in ENQUEUED/RUNNING during this session.
+        viewModelScope.launch {
+            workManager.getWorkInfosByTagFlow(DownloadWorker.TAG).collect { workInfos ->
+                for (workInfo in workInfos) {
+                    val taskId = workInfo.id.toString()
+                    if (workInfo.state == WorkInfo.State.ENQUEUED || workInfo.state == WorkInfo.State.RUNNING) {
+                        sessionObservedActiveWorkIds.add(taskId)
+                    } else if (workInfo.state == WorkInfo.State.SUCCEEDED) {
+                        if (sessionObservedActiveWorkIds.contains(taskId) && notifiedSuccessIds.add(taskId)) {
+                            val urlFromTag = workInfo.tags.firstOrNull { it.startsWith("url:") }?.removePrefix("url:")
+                            val uniqueKey = urlFromTag?.let { SourceKey.of(it) } ?: ""
+                            val info = localTaskMap[taskId] ?: localTaskMapByUrl[uniqueKey]
+                            val title = info?.metadata?.title
+                                ?: workInfo.tags.firstOrNull { it.startsWith("title:") }?.removePrefix("title:")
+                                ?: "Bài hát"
+                            _successMessage.value = "Tải thành công: $title"
+                        }
+                    }
                 }
             }
         }
@@ -362,11 +423,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissQualityDialog() {
         _showQualityDialog.value = false
         _analyzedMetadata.value = null
+        _forceNextDownload = false
     }
 
     fun dismissDuplicateDialog() {
         _duplicateSong.value = null
         _pendingDuplicateMetadata = null
+        _forceNextDownload = false
     }
 
     fun continueDownloadAfterDuplicate() {
@@ -374,6 +437,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _duplicateSong.value = null
         _pendingDuplicateMetadata = null
         if (meta != null) {
+            _forceNextDownload = true
             _analyzedMetadata.value = meta
             _showQualityDialog.value = true
         }
@@ -450,11 +514,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             artist = customArtist?.takeIf { it.isNotBlank() } ?: meta.artist
         )
 
+        val isForce = _forceNextDownload
+        _forceNextDownload = false
+
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        val inputData = DownloadWorker.buildInput(finalMetadata, quality, targetPlaylistId)
+        val inputData = DownloadWorker.buildInput(finalMetadata, quality, targetPlaylistId, force = isForce)
 
         val workRequestBuilder = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setConstraints(constraints)
@@ -482,10 +549,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         localTaskMapByUrl[uniqueName] = info
 
         hiddenTaskIds.value = hiddenTaskIds.value - taskId
+        sessionObservedActiveWorkIds.add(taskId)
 
+        val policy = if (isForce) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
         workManager.enqueueUniqueWork(
             uniqueName,
-            ExistingWorkPolicy.KEEP,
+            policy,
             workRequest
         )
 
@@ -898,8 +967,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun savePlaybackSnapshot() {
+        val snapshot = playerManager.snapshot()
+        if (snapshot != null) {
+            playbackStateStore.save(snapshot)
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        savePlaybackSnapshot()
         playerManager.cleanup()
     }
 }
