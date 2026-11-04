@@ -138,6 +138,23 @@ class CrossfadeDeviceTest {
     }
 
     @Test
+    fun xf6_chon_tay_bai_khac_khi_bai_ke_chua_nap_san() {
+        val a = song(10, 440.0); val b = song(11, 660.0); val c = song(12, 523.0)
+        setRepeat(RepeatMode.OFF)
+        main { player.setQueue(listOf(a, b, c), 0) }
+        waitPlaying()
+        record(500, "xf6-truoc")
+        main { player.playQueueSong(2) } // chon tay bai C (khong phai bai ke tiep, chua duoc nap san)
+        val s = record(2500, "xf6-sau")
+        val bv = base
+        assertEquals(c.id, s.last().current)
+        val tail = s.filter { it.t >= 1500 }
+        assertTrue("sau khi chon tay, bai C im hoac khong chay: ${tail.map { "${it.vols} pos=${it.pos}" }}",
+            tail.isNotEmpty() && tail.all { it.v(c.id) >= 0.9f * bv && it.v(a.id) < 0.05f })
+        assertTrue("thanh tien trinh dung yen: ${tail.map { it.pos }}", tail.last().pos - tail.first().pos >= 500)
+    }
+
+    @Test
     fun xf5_tat_crossfade_chuyen_bai_lien_mach() {
         main { player.setCrossfadeSeconds(0) }
         val a = song(8, 440.0); val b = song(9, 660.0)

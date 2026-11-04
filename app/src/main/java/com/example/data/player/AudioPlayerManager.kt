@@ -871,17 +871,18 @@ class AudioPlayerManager(private val context: Context) {
         incomingPlayer = newPlayer
         incomingSong = nextSong
 
+        // Nap bai moi vao player MOI truoc khi doi vai (preloadStandby dung getter standbyPlayer:
+        // goi sau khi doi activePlayerIndex se nap nham vao player CU dang nho dan -> het crossfade bi stop, im lang).
+        if (newPlayer?.playbackState == Player.STATE_IDLE || standbySong?.id != nextSong.id) {
+            preloadStandby(nextSong)
+        }
+        standbySong = null
+
         // Advance queue
         advanceQueueIndicesTo(nextSong)
         _currentSong.value = nextSong
         activeSong = nextSong
         activePlayerIndex = 1 - activePlayerIndex
-
-        // Ensure standby player is prepared
-        if (newPlayer?.playbackState == Player.STATE_IDLE || standbySong?.id != nextSong.id) {
-            preloadStandby(nextSong)
-        }
-        standbySong = null
 
         newPlayer?.volume = 0f
         applyPlaybackSpeedTo(newPlayer, _playbackSpeed.value)
