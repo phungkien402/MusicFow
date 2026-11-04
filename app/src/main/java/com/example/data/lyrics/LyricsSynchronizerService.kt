@@ -104,7 +104,7 @@ object LyricsSynchronizerService {
             .trim()
 
         // 1. Split by delimiters like '-', '–', '|'
-        val segments = cleaned.split(Regex("[-–—|]")).map { it.trim() }.filter { it.isNotEmpty() }
+        val segments = cleaned.split(Regex("""\s*\|\s*|\s+[-–—]\s+""")).map { it.trim() }.filter { it.isNotEmpty() }
         if (segments.size >= 2) {
             val titlePart = segments[0]
             val artistPart = segments[1]
@@ -119,7 +119,7 @@ object LyricsSynchronizerService {
         if (cleaned.contains(" x ", ignoreCase = true)) {
             val parts = cleaned.split(Regex(" x ", RegexOption.IGNORE_CASE))
             for (p in parts) {
-                val cleanPart = p.split(Regex("[-–—|]")).firstOrNull()?.trim() ?: ""
+                val cleanPart = p.split(Regex("""\s*\|\s*|\s+[-–—]\s+""")).firstOrNull()?.trim() ?: ""
                 if (cleanPart.isNotEmpty()) {
                     candidates.add(cleanPart to "")
                 }
@@ -308,29 +308,26 @@ object LyricsSynchronizerService {
      * calculating timestamps proportionally across the track's duration.
      */
     fun generateSmartTimeline(plainLyrics: String, durationMs: Long): String {
-        val rawLines = plainLyrics.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        if (rawLines.isEmpty()) return ""
+        val lines = plainLyrics.lines()
+            .map { it.replace(lrcTagPattern.toRegex(), "").trim() }
+            .filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return ""
 
-        val totalDuration = if (durationMs > 20000L) durationMs else 210000L
-        val introDelayMs = 12000L // Typical song intro 12s
-        val outroMarginMs = 15000L // Typical song outro 15s
-        val vocalDurationMs = (totalDuration - introDelayMs - outroMarginMs).coerceAtLeast(10000L)
+        val total = if (durationMs > 0L) durationMs else 210000L
+        val intro = minOf(12000L, total / 10L)
+        val outro = minOf(15000L, total / 10L)
+        val available = total - outro - intro
+        val stepMs = available / lines.size
 
-        val stepMs = vocalDurationMs / rawLines.size.coerceAtLeast(1)
         val sb = StringBuilder()
-
         sb.append(formatTimestamp(0L)).append(" 🎵 (Nhạc dạo mở đầu)\n")
 
-        rawLines.forEachIndexed { index, line ->
-            // Skip existing timestamp tags if any
-            val cleanLine = line.replace(lrcTagPattern.toRegex(), "").trim()
-            if (cleanLine.isNotEmpty()) {
-                val lineTimeMs = introDelayMs + (index * stepMs)
-                sb.append(formatTimestamp(lineTimeMs)).append(" ").append(cleanLine).append("\n")
-            }
+        lines.forEachIndexed { index, cleanLine ->
+            val lineTimeMs = intro + (index * stepMs)
+            sb.append(formatTimestamp(lineTimeMs)).append(" ").append(cleanLine).append("\n")
         }
 
-        sb.append(formatTimestamp(totalDuration - 8000L)).append(" 🎶 (Phần kết)\n")
+        sb.append(formatTimestamp(total - outro / 2L)).append(" 🎶 (Phần kết)\n")
         return sb.toString().trim()
     }
 

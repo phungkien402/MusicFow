@@ -85,12 +85,14 @@ data class AudioQuality(
                     MP3_128
                 )
                 SourceType.DIRECT_URL -> {
-                    val lower = url.lowercase()
-                    when {
-                        lower.contains(".flac") -> listOf(FLAC_LOSSLESS, WAV_HIRES, MP3_320)
-                        lower.contains(".wav") -> listOf(WAV_HIRES, MP3_320)
-                        lower.contains(".m4a") || lower.contains(".aac") -> listOf(M4A_256, MP3_320)
-                        lower.contains(".mp3") -> listOf(MP3_320, MP3_128)
+                    val path = url.substringBefore('?').substringBefore('#')
+                    val lastSegment = path.substringAfterLast('/')
+                    val ext = if (lastSegment.contains('.')) lastSegment.substringAfterLast('.').lowercase() else ""
+                    when (ext) {
+                        "flac" -> listOf(FLAC_LOSSLESS, WAV_HIRES, MP3_320)
+                        "wav" -> listOf(WAV_HIRES, MP3_320)
+                        "m4a", "aac" -> listOf(M4A_256, MP3_320)
+                        "mp3" -> listOf(MP3_320, MP3_128)
                         else -> listOf(
                             MP3_320,
                             M4A_256,

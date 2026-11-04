@@ -244,6 +244,7 @@ class MusicRepository(
     }
 
     suspend fun deleteSong(song: Song) = withContext(Dispatchers.IO) {
+        dao.deleteCrossRefsForSong(song.id)
         dao.deleteSong(song.id)
         if (song.filePath.isNotBlank()) {
             val file = File(song.filePath)
@@ -299,6 +300,7 @@ class MusicRepository(
     }
 
     suspend fun deletePlaylist(playlistId: Long) = withContext(Dispatchers.IO) {
+        dao.deleteCrossRefsForPlaylist(playlistId)
         dao.deletePlaylist(playlistId)
     }
 
@@ -615,76 +617,104 @@ class MusicRepository(
             var restoredPlaylists = 0
             var restoredSongs = 0
 
-            val playlistEntities = mutableListOf<PlaylistEntity>()
-            for (i in 0 until playlistsArray.length()) {
-                val obj = playlistsArray.getJSONObject(i)
-                playlistEntities.add(
-                    PlaylistEntity(
-                        id = obj.optLong("id", 0),
-                        name = obj.getString("name"),
-                        description = obj.optString("description", ""),
-                        coverColorHex = obj.optString("coverColorHex", "#00F5FF"),
-                        createdTimestamp = obj.optLong("createdTimestamp", System.currentTimeMillis())
-                    )
-                )
-            }
-            if (playlistEntities.isNotEmpty()) {
-                dao.insertPlaylists(playlistEntities)
-                restoredPlaylists = playlistEntities.size
+            val playlistIdMap = mutableMapOf<Long, Long>()
+            val songIdMap = mutableMapOf<Long, Long>()
+
+            fun getCleanJsonString(obj: org.json.JSONObject, key: String): String? {
+                if (!obj.has(key) || obj.isNull(key)) return null
+                val str = obj.optString(key, "")
+                return if (str.isBlank() || str.equals("null", ignoreCase = true)) null else str
             }
 
-            val songEntities = mutableListOf<SongEntity>()
+            for (i in 0 until playlistsArray.length()) {
+                val obj = playlistsArray.getJSONObject(i)
+                val backupId = obj.optLong("id", 0L)
+                val name = obj.getString("name")
+                val existingPlaylist = dao.findPlaylistByName(name.trim())
+                if (existingPlaylist != null) {
+                    if (backupId != 0L) {
+                        playlistIdMap[backupId] = existingPlaylist.id
+                    }
+                } else {
+                    val newId = dao.insertPlaylist(
+                        PlaylistEntity(
+                            id = 0,
+                            name = name,
+                            description = obj.optString("description", ""),
+                            coverColorHex = obj.optString("coverColorHex", "#00F5FF"),
+                            createdTimestamp = obj.optLong("createdTimestamp", System.currentTimeMillis())
+                        )
+                    )
+                    if (backupId != 0L) {
+                        playlistIdMap[backupId] = newId
+                    }
+                    restoredPlaylists++
+                }
+            }
+
             for (i in 0 until songsArray.length()) {
                 val obj = songsArray.getJSONObject(i)
+                val backupId = obj.optLong("id", 0L)
                 val title = obj.getString("title")
                 val artist = obj.optString("artist", "Unknown")
                 val existing = dao.findDuplicateSong(title, artist)
+                val lyrics = getCleanJsonString(obj, "lyrics")
+                val sourceUrl = getCleanJsonString(obj, "sourceUrl")
+                val thumbnailUrl = getCleanJsonString(obj, "thumbnailUrl")
+
                 if (existing != null) {
-                    val backupLyrics = obj.optString("lyrics", "")
-                    if (backupLyrics.isNotBlank() && existing.lyrics.isNullOrBlank()) {
-                        dao.updateSongLyrics(existing.id, backupLyrics)
+                    if (backupId != 0L) {
+                        songIdMap[backupId] = existing.id
+                    }
+                    if (lyrics != null && existing.lyrics.isNullOrBlank()) {
+                        dao.updateSongLyrics(existing.id, lyrics)
                     }
                     if (obj.optBoolean("isFavorite", false) && !existing.isFavorite) {
                         dao.toggleFavorite(existing.id)
                     }
                 } else {
-                    songEntities.add(
-                        SongEntity(
-                            id = obj.optLong("id", 0),
-                            title = title,
-                            artist = artist,
-                            album = obj.optString("album", "SoundFlow Collection"),
-                            durationMs = obj.optLong("durationMs", 180000L),
-                            filePath = obj.optString("filePath", ""),
-                            sourceUrl = obj.optString("sourceUrl", null),
-                            format = obj.optString("format", "mp3"),
-                            bitrate = obj.optString("bitrate", "320 kbps"),
-                            fileSizeBytes = obj.optLong("fileSizeBytes", 0L),
-                            isDownloaded = true,
-                            isFavorite = obj.optBoolean("isFavorite", false),
-                            sourceType = obj.optString("sourceType", SourceType.OFFLINE.name),
-                            thumbnailUrl = obj.optString("thumbnailUrl", null),
-                            addedTimestamp = System.currentTimeMillis(),
-                            playCount = obj.optInt("playCount", 0),
-                            lyrics = obj.optString("lyrics", null).ifBlank { null }
-                        )
+                    val newSong = SongEntity(
+                        id = 0,
+                        title = title,
+                        artist = artist,
+                        album = obj.optString("album", "SoundFlow Collection"),
+                        durationMs = obj.optLong("durationMs", 180000L),
+                        filePath = obj.optString("filePath", ""),
+                        sourceUrl = sourceUrl,
+                        format = obj.optString("format", "mp3"),
+                        bitrate = obj.optString("bitrate", "320 kbps"),
+                        fileSizeBytes = obj.optLong("fileSizeBytes", 0L),
+                        isDownloaded = true,
+                        isFavorite = obj.optBoolean("isFavorite", false),
+                        sourceType = obj.optString("sourceType", SourceType.OFFLINE.name),
+                        thumbnailUrl = thumbnailUrl,
+                        addedTimestamp = System.currentTimeMillis(),
+                        playCount = obj.optInt("playCount", 0),
+                        lyrics = lyrics
                     )
+                    val newId = dao.insertSong(newSong)
+                    if (backupId != 0L) {
+                        songIdMap[backupId] = newId
+                    }
+                    restoredSongs++
                 }
-            }
-            if (songEntities.isNotEmpty()) {
-                dao.insertSongs(songEntities)
-                restoredSongs = songEntities.size
             }
 
             val crossRefs = mutableListOf<PlaylistSongCrossRef>()
             for (i in 0 until refsArray.length()) {
                 val obj = refsArray.getJSONObject(i)
-                crossRefs.add(
-                    PlaylistSongCrossRef(
-                        playlistId = obj.getLong("playlistId"),
-                        songId = obj.getLong("songId")
+                val backupPlaylistId = obj.optLong("playlistId", 0L)
+                val backupSongId = obj.optLong("songId", 0L)
+                val targetPlaylistId = playlistIdMap[backupPlaylistId]
+                val targetSongId = songIdMap[backupSongId]
+                if (targetPlaylistId != null && targetSongId != null) {
+                    crossRefs.add(
+                        PlaylistSongCrossRef(
+                            playlistId = targetPlaylistId,
+                            songId = targetSongId
+                        )
                     )
-                )
+                }
             }
             if (crossRefs.isNotEmpty()) {
                 dao.insertPlaylistSongsCrossRefs(crossRefs)

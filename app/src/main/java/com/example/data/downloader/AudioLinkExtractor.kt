@@ -255,7 +255,16 @@ class AudioLinkExtractor(private val context: Context) {
     ): Result<Song> = withContext(Dispatchers.IO) {
         try {
             val downloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads").apply { mkdirs() }
-            val sanitizedTitle = metadata.title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(30)
+            val normalizedTitle = java.text.Normalizer.normalize(metadata.title, java.text.Normalizer.Form.NFD)
+                .replace(Regex("\\p{M}"), "")
+                .replace('đ', 'd')
+                .replace('Đ', 'D')
+            val sanitized = normalizedTitle
+                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                .replace(Regex("_+"), "_")
+                .trim('_')
+                .take(40)
+            val sanitizedTitle = if (sanitized.isNotEmpty()) sanitized else "track"
             val extension = when (quality.format) {
                 AudioFormat.WAV -> "wav"
                 AudioFormat.M4A -> "m4a"
@@ -398,7 +407,7 @@ class AudioLinkExtractor(private val context: Context) {
                     SourceType.TIKTOK -> "TikTok Sound"
                     else -> "SoundFlow Downloads"
                 },
-                durationMs = metadata.estimatedDurationMs,
+                durationMs = actualDuration,
                 filePath = targetFile.absolutePath,
                 sourceUrl = metadata.originalUrl,
                 format = quality.format,
@@ -584,38 +593,83 @@ class AudioLinkExtractor(private val context: Context) {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return false
-            val body = response.body ?: return false
-            val contentLength = body.contentLength()
-            val totalBytes = if (contentLength > 0) contentLength else (5 * 1024 * 1024L)
+        try {
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    targetFile.delete()
+                    return false
+                }
+                val body = response.body ?: run {
+                    targetFile.delete()
+                    return false
+                }
 
-            val inputStream = body.byteStream()
-            val outputStream = FileOutputStream(targetFile)
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
-            var downloadedBytes = 0L
-            var lastTime = System.currentTimeMillis()
-            var bytesSinceLast = 0L
+                val contentType = response.header("Content-Type")?.lowercase()
+                if (contentType != null && (contentType.startsWith("text/") || contentType.contains("html") || contentType.contains("json"))) {
+                    targetFile.delete()
+                    return false
+                }
 
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                outputStream.write(buffer, 0, bytesRead)
-                downloadedBytes += bytesRead
-                bytesSinceLast += bytesRead
+                val contentLength = body.contentLength()
+                val totalBytes = if (contentLength > 0) contentLength else (5 * 1024 * 1024L)
 
-                val now = System.currentTimeMillis()
-                if (now - lastTime >= 250) {
-                    val speedKbps = (bytesSinceLast * 1000.0) / (now - lastTime) / 1024.0
-                    val speedText = if (speedKbps > 1024) "%.1f MB/s".format(speedKbps / 1024) else "%.0f KB/s".format(speedKbps)
-                    val percent = ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(1, 99)
-                    onProgress(percent, downloadedBytes, totalBytes, speedText)
-                    lastTime = now
-                    bytesSinceLast = 0L
+                val inputStream = body.byteStream()
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var downloadedBytes = 0L
+                var lastTime = System.currentTimeMillis()
+                var bytesSinceLast = 0L
+                var checkedFirstBytes = false
+                var isContentInvalid = false
+
+                FileOutputStream(targetFile).use { outputStream ->
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        if (!checkedFirstBytes) {
+                            for (i in 0 until bytesRead) {
+                                val ch = buffer[i].toInt().toChar()
+                                if (!ch.isWhitespace()) {
+                                    checkedFirstBytes = true
+                                    if (ch == '<' || ch == '{') {
+                                        isContentInvalid = true
+                                    }
+                                    break
+                                }
+                            }
+                            if (isContentInvalid) {
+                                return@use
+                            }
+                        }
+                        outputStream.write(buffer, 0, bytesRead)
+                        downloadedBytes += bytesRead
+                        bytesSinceLast += bytesRead
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastTime >= 250) {
+                            val speedKbps = (bytesSinceLast * 1000.0) / (now - lastTime) / 1024.0
+                            val speedText = if (speedKbps > 1024) "%.1f MB/s".format(speedKbps / 1024) else "%.0f KB/s".format(speedKbps)
+                            val percent = ((downloadedBytes * 100) / totalBytes).toInt().coerceIn(1, 99)
+                            onProgress(percent, downloadedBytes, totalBytes, speedText)
+                            lastTime = now
+                            bytesSinceLast = 0L
+                        }
+                    }
+                    outputStream.flush()
+                }
+
+                if (isContentInvalid) {
+                    targetFile.delete()
+                    return false
                 }
             }
-            outputStream.flush()
-            outputStream.close()
+        } catch (e: Exception) {
+            targetFile.delete()
+            return false
         }
-        return targetFile.exists() && targetFile.length() > 5000
+
+        val isValid = targetFile.exists() && targetFile.length() > 5000
+        if (!isValid) {
+            targetFile.delete()
+        }
+        return isValid
     }
 }

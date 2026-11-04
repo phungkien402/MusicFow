@@ -173,6 +173,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 repository.incrementPlayCount(finishedSong.id)
             }
         }
+
+        viewModelScope.launch {
+            playerManager.playbackError.collect { error ->
+                if (error != null) {
+                    _errorMessage.value = error
+                }
+            }
+        }
     }
 
     fun setTab(tab: AppTab) {

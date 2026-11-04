@@ -52,7 +52,7 @@ data class Song(
 
     val fileSizeFormatted: String
         get() {
-            if (fileSizeBytes <= 0) return "2.8 MB"
+            if (fileSizeBytes <= 0) return "--"
             val mb = fileSizeBytes.toDouble() / (1024 * 1024)
             return "%.1f MB".format(mb)
         }

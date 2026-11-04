@@ -15,7 +15,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.CountDownTimer
 import android.util.Log
-import com.example.data.downloader.SampleAudioGenerator
 import com.example.data.model.Song
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -249,6 +248,9 @@ class AudioPlayerManager(private val context: Context) {
     private val _isStopAfterSong = MutableStateFlow(false)
     val isStopAfterSong: StateFlow<Boolean> = _isStopAfterSong.asStateFlow()
 
+    private val _playbackError = MutableStateFlow<String?>(null)
+    val playbackError: StateFlow<String?> = _playbackError.asStateFlow()
+
     private val _crossfadeSeconds = MutableStateFlow(0)
     val crossfadeSeconds: StateFlow<Int> = _crossfadeSeconds.asStateFlow()
 
@@ -290,12 +292,20 @@ class AudioPlayerManager(private val context: Context) {
 
     fun isSameSong(s1: Song?, s2: Song?): Boolean {
         if (s1 == null || s2 == null) return false
-        if (s1.id > 0 && s2.id > 0 && s1.id == s2.id) return true
-        if (s1.filePath.isNotBlank() && s2.filePath.isNotBlank() && s1.filePath == s2.filePath) return true
-        if (!s1.sourceUrl.isNullOrBlank() && !s2.sourceUrl.isNullOrBlank() && s1.sourceUrl == s2.sourceUrl) return true
-        if (s1.title.isNotBlank() && s1.title.trim().equals(s2.title.trim(), ignoreCase = true) &&
-            s1.artist.trim().equals(s2.artist.trim(), ignoreCase = true)) return true
-        return false
+        if (s1.id > 0 && s2.id > 0) return s1.id == s2.id
+        if (s1.filePath.isNotBlank() && s2.filePath.isNotBlank()) return s1.filePath == s2.filePath
+        if (!s1.sourceUrl.isNullOrBlank() && !s2.sourceUrl.isNullOrBlank()) return s1.sourceUrl == s2.sourceUrl
+        return s1.title.isNotBlank() && s1.title.trim().equals(s2.title.trim(), ignoreCase = true) &&
+            s1.artist.trim().equals(s2.artist.trim(), ignoreCase = true)
+    }
+
+    private fun remapIndex(idx: Int, from: Int, to: Int): Int {
+        return when {
+            idx == from -> to
+            from < to && idx in (from + 1)..to -> idx - 1
+            from > to && idx in to until from -> idx + 1
+            else -> idx
+        }
     }
 
     fun onSongDeleted(deletedSong: Song) {
@@ -306,34 +316,69 @@ class AudioPlayerManager(private val context: Context) {
         val oldIdx = _currentIndex.value
         val newQueue = oldQueue.filter { !isSameSong(it, deletedSong) }
 
-        if (isCurrentPlaying) {
-            // First release player so the deleted track's audio stops immediately
-            releasePlayer()
-            _playQueue.value = newQueue
-            if (newQueue.isNotEmpty()) {
-                val nextIdx = oldIdx.coerceIn(0, newQueue.size - 1)
-                _currentIndex.value = nextIdx
-                if (_isShuffle.value) {
-                    generateShuffleOrder(nextIdx)
+        if (_isShuffle.value) {
+            val toRemove = oldQueue.indices.filter { isSameSong(oldQueue[it], deletedSong) }.sortedDescending()
+            for (delIdx in toRemove) {
+                val orderIdx = shuffleOrder.indexOf(delIdx)
+                if (orderIdx != -1) {
+                    shuffleOrder.removeAt(orderIdx)
+                    for (i in shuffleOrder.indices) {
+                        if (shuffleOrder[i] > delIdx) {
+                            shuffleOrder[i]--
+                        }
+                    }
+                    if (orderIdx < shufflePosition) {
+                        shufflePosition--
+                    }
+                    if (shuffleOrder.isNotEmpty()) {
+                        shufflePosition = shufflePosition.coerceIn(0, shuffleOrder.size - 1)
+                    } else {
+                        shufflePosition = 0
+                    }
                 }
-                playSong(newQueue[nextIdx])
+            }
+            if (isCurrentPlaying) {
+                releasePlayer()
+                _playQueue.value = newQueue
+                if (newQueue.isNotEmpty() && shuffleOrder.isNotEmpty()) {
+                    val nextIdx = shuffleOrder[shufflePosition]
+                    _currentIndex.value = nextIdx
+                    playSong(newQueue[nextIdx])
+                } else {
+                    stopPlaybackCompletely()
+                }
             } else {
-                stopPlaybackCompletely()
+                _playQueue.value = newQueue
+                if (newQueue.isNotEmpty() && shuffleOrder.isNotEmpty()) {
+                    _currentIndex.value = shuffleOrder[shufflePosition]
+                } else if (newQueue.isEmpty()) {
+                    _currentIndex.value = 0
+                }
             }
         } else {
-            _playQueue.value = newQueue
-            if (newQueue.isNotEmpty()) {
-                val newIdx = if (current != null) {
-                    newQueue.indexOfFirst { isSameSong(it, current) }.coerceAtLeast(0)
+            if (isCurrentPlaying) {
+                // First release player so the deleted track's audio stops immediately
+                releasePlayer()
+                _playQueue.value = newQueue
+                if (newQueue.isNotEmpty()) {
+                    val nextIdx = oldIdx.coerceIn(0, newQueue.size - 1)
+                    _currentIndex.value = nextIdx
+                    playSong(newQueue[nextIdx])
                 } else {
-                    oldIdx.coerceIn(0, newQueue.size - 1)
-                }
-                _currentIndex.value = newIdx
-                if (_isShuffle.value) {
-                    generateShuffleOrder(newIdx)
+                    stopPlaybackCompletely()
                 }
             } else {
-                _currentIndex.value = 0
+                _playQueue.value = newQueue
+                if (newQueue.isNotEmpty()) {
+                    val newIdx = if (current != null) {
+                        newQueue.indexOfFirst { isSameSong(it, current) }.coerceAtLeast(0)
+                    } else {
+                        oldIdx.coerceIn(0, newQueue.size - 1)
+                    }
+                    _currentIndex.value = newIdx
+                } else {
+                    _currentIndex.value = 0
+                }
             }
         }
     }
@@ -342,21 +387,52 @@ class AudioPlayerManager(private val context: Context) {
         val currentList = _playQueue.value.toMutableList()
         if (index in currentList.indices) {
             val currIdx = _currentIndex.value
+            val isCurrentPlaying = (index == currIdx)
             currentList.removeAt(index)
             _playQueue.value = currentList
-            if (index < currIdx) {
-                _currentIndex.value = currIdx - 1
-            } else if (index == currIdx) {
-                if (currentList.isNotEmpty()) {
-                    val nextIdx = currIdx.coerceIn(0, currentList.size - 1)
-                    _currentIndex.value = nextIdx
-                    playSong(currentList[nextIdx])
-                } else {
-                    stopPlaybackCompletely()
-                }
-            }
             if (_isShuffle.value) {
-                generateShuffleOrder(_currentIndex.value)
+                val orderIdx = shuffleOrder.indexOf(index)
+                if (orderIdx != -1) {
+                    shuffleOrder.removeAt(orderIdx)
+                    for (i in shuffleOrder.indices) {
+                        if (shuffleOrder[i] > index) {
+                            shuffleOrder[i]--
+                        }
+                    }
+                    if (orderIdx < shufflePosition) {
+                        shufflePosition--
+                    }
+                    if (shuffleOrder.isNotEmpty()) {
+                        shufflePosition = shufflePosition.coerceIn(0, shuffleOrder.size - 1)
+                    } else {
+                        shufflePosition = 0
+                    }
+                }
+                if (isCurrentPlaying) {
+                    if (currentList.isNotEmpty() && shuffleOrder.isNotEmpty()) {
+                        val nextIdx = shuffleOrder[shufflePosition]
+                        _currentIndex.value = nextIdx
+                        playSong(currentList[nextIdx])
+                    } else {
+                        stopPlaybackCompletely()
+                    }
+                } else {
+                    if (shuffleOrder.isNotEmpty()) {
+                        _currentIndex.value = shuffleOrder[shufflePosition]
+                    }
+                }
+            } else {
+                if (index < currIdx) {
+                    _currentIndex.value = currIdx - 1
+                } else if (isCurrentPlaying) {
+                    if (currentList.isNotEmpty()) {
+                        val nextIdx = currIdx.coerceIn(0, currentList.size - 1)
+                        _currentIndex.value = nextIdx
+                        playSong(currentList[nextIdx])
+                    } else {
+                        stopPlaybackCompletely()
+                    }
+                }
             }
         }
     }
@@ -374,23 +450,28 @@ class AudioPlayerManager(private val context: Context) {
         currentList.add(insertIdx, song)
         _playQueue.value = currentList
         if (_isShuffle.value) {
-            generateShuffleOrder(_currentIndex.value)
+            for (i in shuffleOrder.indices) {
+                if (shuffleOrder[i] >= insertIdx) {
+                    shuffleOrder[i]++
+                }
+            }
+            val insertPos = (shufflePosition + 1).coerceIn(0, shuffleOrder.size)
+            shuffleOrder.add(insertPos, insertIdx)
         }
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         val currentList = _playQueue.value.toMutableList()
         if (fromIndex in currentList.indices && toIndex in currentList.indices && fromIndex != toIndex) {
-            val currentPlaying = currentList.getOrNull(_currentIndex.value)
             val item = currentList.removeAt(fromIndex)
             currentList.add(toIndex, item)
             _playQueue.value = currentList
-            currentPlaying?.let {
-                val newCurrIdx = currentList.indexOfFirst { song -> song.id == it.id }
-                if (newCurrIdx != -1) _currentIndex.value = newCurrIdx
-            }
+            val currIdx = _currentIndex.value
+            _currentIndex.value = remapIndex(currIdx, fromIndex, toIndex)
             if (_isShuffle.value) {
-                generateShuffleOrder(_currentIndex.value)
+                for (i in shuffleOrder.indices) {
+                    shuffleOrder[i] = remapIndex(shuffleOrder[i], fromIndex, toIndex)
+                }
             }
         }
     }
@@ -445,6 +526,7 @@ class AudioPlayerManager(private val context: Context) {
         _isPlaying.value = true
         isManuallyPaused = false
         isPausedDueToTransientLoss = false
+        _playbackError.value = null
         requestAudioFocus()
 
         playJob?.cancel()
@@ -466,6 +548,13 @@ class AudioPlayerManager(private val context: Context) {
                     }
 
                     if (!isActive || !_isPlaying.value || isManuallyPaused) return@withContext
+
+                    if (validPath == null && (song.sourceUrl.isNullOrBlank() || !song.sourceUrl.startsWith("http"))) {
+                        releasePlayer()
+                        _isPlaying.value = false
+                        _playbackError.value = "Không tìm thấy file bài hát: ${song.title}. Hãy tải lại."
+                        return@withContext
+                    }
 
                     val newPlayer = MediaPlayer().apply {
                         setAudioAttributes(
@@ -505,22 +594,8 @@ class AudioPlayerManager(private val context: Context) {
                                 MusicPlaybackService.updateService(context, song, true)
                             }
                             prepareAsync()
-                        } else {
-                            val ensuredFile = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads/${file.name}")
-                            SampleAudioGenerator.createSampleWav(ensuredFile, 20)
-                            setDataSource(ensuredFile.absolutePath)
-                            prepare()
-                            if (!isActive || !_isPlaying.value || isManuallyPaused) {
-                                release()
-                                return@withContext
-                            }
-                            _durationMs.value = duration.toLong().coerceAtLeast(song.durationMs)
-                            setupAudioEffects(audioSessionId)
-                            startWithCrossfade(this)
-                            _isPlaying.value = true
-                            startProgressTracker()
-                            MusicPlaybackService.updateService(context, song.copy(filePath = ensuredFile.absolutePath), true)
                         }
+
 
                         setOnCompletionListener {
                             handleSongCompletion()
